@@ -1,7 +1,7 @@
 ---
 name: boss-zhipin-scraper
 description: "Scrape BOSS直聘 (job listing site) via Chrome CDP. Searches jobs by keyword/city/filters, fetches JD details, outputs structured JSON/CSV with plaintext salary, and can summarize scraped results into a job-market prompt. Use when user wants to search/analyze jobs on BOSS直聘 or zhipin.com."
-version: 2.3.0
+version: 2.4.0
 author: eatmoreduck
 license: MIT
 platforms: [macos, linux]
@@ -10,7 +10,7 @@ metadata:
     tags: [scraper, jobs, career, cdp, chrome, zhipin, boss直聘]
 ---
 
-# BOSS直聘职位抓取工具 v2.3
+# BOSS直聘职位抓取工具 v2.4
 
 通过 Chrome CDP 协议抓取 BOSS直聘 (zhipin.com) 职位数据，输出结构化 JSON/CSV（含明文薪资），并可对已抓取结果生成聚合摘要和求职材料优化提示词。
 
@@ -25,6 +25,20 @@ metadata:
 - `scripts/boss_cdp_raw.py`：抓取主脚本
 - `scripts/job_summary.py`：抓取后摘要和提示词脚本
 - `scripts/company_detail/extractor.py`：公司详情提取模块
+- `scripts/company_list/db.py`：SQLite 三表桥接数据访问层
+- `scripts/company_list/pipeline.py`：分阶段管道编排 + PipelineState 状态机
+- `scripts/company_insight/__init__.py`：企查查洞察子包（预留）
+
+安装到 Hermes skills 目录时需一并复制：
+
+```bash
+cp boss-zhipin-scraper/scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp boss-zhipin-scraper/scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
+cp boss-zhipin-scraper/scripts/company_detail/extractor.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
+cp boss-zhipin-scraper/scripts/company_list/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
+cp boss-zhipin-scraper/scripts/company_list/db.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
+cp boss-zhipin-scraper/scripts/company_list/pipeline.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
+```
 
 运行前先确定脚本绝对路径（详见 [skill/install.md](skill/install.md)）。
 
@@ -33,6 +47,8 @@ metadata:
 ```bash
 uv add websocket-client requests beautifulsoup4
 ```
+
+
 
 ## 自动化流程
 
@@ -48,11 +64,15 @@ python3 "$SCRIPT_PATH" --check --cdp-port 9222
 - CDP 不通 → 继续第 2 步
 - 未登录 → 告诉用户登录后重试
 
+
+
 ### 2. 启动专用浏览器 CDP（仅 CDP 不通时）
 
 ```bash
 python3 "$SCRIPT_PATH" --setup-chrome --cdp-port 9222
 ```
+
+
 
 ### 3. 运行抓取
 
@@ -66,6 +86,8 @@ python3 "$SCRIPT_PATH" --keyword "关键词" --city 上海 --pages 3 --detail --
 # 抓取后摘要
 python3 "$SUMMARY_PATH" --top 15
 ```
+
+
 
 ## Pipeline（管道查询）
 
@@ -93,13 +115,19 @@ python "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100
 2. **--check 未登录** → 在专用 Chrome 中访问 zhipin.com 登录，或重新运行 `--setup-chrome`
 3. **薪资空白** → 通常是未登录、登录态失效；先重新登录，不要优先做字体解密
 
+
+
 ## 子模块索引
 
-| 何时读 | 文件 |
-|--------|------|
-| Pipeline 状态机、决策流程、SQL 查询、文件路径 | [skill/pipeline.md](skill/pipeline.md) |
-| 完整参数速查、筛选条件、输出格式、工作原理 | [skill/reference.md](skill/reference.md) |
-| 脚本路径查找、curl/clone 安装 skill | [skill/install.md](skill/install.md) |
+
+| 何时读                           | 文件                                       |
+| ----------------------------- | ---------------------------------------- |
+| Pipeline 状态机、决策流程、SQL 查询、文件路径 | [skill/pipeline.md](skill/pipeline.md)   |
+| 完整参数速查、筛选条件、输出格式、工作原理         | [skill/reference.md](skill/reference.md) |
+| 脚本路径查找、curl/clone 安装 skill    | [skill/install.md](skill/install.md)     |
+
+
+
 
 ## 注意事项
 
@@ -107,3 +135,4 @@ python "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100
 - 单次最多 10 页（300 条），防封号
 - 翻页间隔 12-22 秒随机延迟
 - BOSS直聘可能更新 API 路径，失效时需更新脚本中 `API_JOB_LIST_PATH` 常量
+

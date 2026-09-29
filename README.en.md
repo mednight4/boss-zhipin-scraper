@@ -146,6 +146,9 @@ ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/__init__.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/db.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/pipeline.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
 ```
 
