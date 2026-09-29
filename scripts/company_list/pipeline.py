@@ -169,8 +169,11 @@ class PipelineState:
         return "SCRAPE_LIST"
 
     def run(self, keyword=None, city_input=None, filters=None,
-            max_pages=3, cdp_port=9222, fmt="json") -> dict:
+            max_pages=3, cdp_port=9222, fmt="json", detail=True) -> dict:
         """推进管线到 COMPLETE，根据 self.step 自动跳过已完成步骤。
+
+        Args:
+            detail: 是否执行详情抓取（step3-4）。False 时跳过。
 
         Returns: {action, query_hash, step, stats, json_path, detail_count}
         """
@@ -188,9 +191,14 @@ class PipelineState:
         if self.step in ("LIST_JSON_SAVED",):
             self._step_import_list()
 
-        if self.step in ("LIST_DB_IMPORTED",):
-            self._step_scrape_details(cdp_port)
-            self._step_import_details()
+        if detail:
+            if self.step in ("LIST_DB_IMPORTED",):
+                self._step_scrape_details(cdp_port)
+                self._step_import_details()
+        else:
+            # detail=False: 跳过 step3-4，标记为完成
+            if self.step == "LIST_DB_IMPORTED":
+                self.step = "COMPLETE"
 
         return {"action": action, "query_hash": self.query_hash, "step": self.step,
                 "stats": self.db.get_stats()}

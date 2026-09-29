@@ -2747,6 +2747,7 @@ def _run_url_pipeline(args):
         max_pages=args.pages,
         cdp_port=args.cdp_port,
         fmt=args.format,
+        detail=args.detail,
     )
     pipe.db.close()
     print(f"\n=== 完成 ===")
