@@ -2702,6 +2702,138 @@ def resolve_setup_browser(setup_chrome, setup_edge, browser_choice):
 
 
 # ============================================================
+# SQLite 三表桥接管道
+# ============================================================
+def _run_db_pipeline(args):
+    """SQLite 三表桥接的分阶段管道入口."""
+    from scripts.company_list.db import (
+        JobDatabase, build_query_url, compute_query_hash, QUERY_DIR, COMPANY_DIR
+    )
+    from scripts.company_detail.extractor import scrape_company_detail
+
+    db_path = args.db_path or None
+    step = args.step
+
+    db = JobDatabase(db_path)
+    db.connect()
+    db.init_schema()
+
+    try:
+        if step in ("list", "all"):
+            # ── Step 1: 列表抓取 ──
+            if args.list_json:
+                # 从已有 JSON 导入
+                json_path = args.list_json
+                print(f"=== Step 1: 从 JSON 导入列表 ===")
+                print(f"来源: {json_path}")
+            else:
+                # 执行列表抓取
+                if not args.input:
+                    try:
+                        resolve_city(args.city)
+                    except CityResolutionError as e:
+                        print(f"❌ {e}")
+                        sys.exit(1)
+
+                max_pages = min(args.pages, MAX_PAGES)
+                filters = {}
+                for key in ["scale", "stage", "salary", "experience", "degree", "industry"]:
+                    val = getattr(args, key)
+                    if val:
+                        filters[key] = val
+
+                os.makedirs(QUERY_DIR, exist_ok=True)
+                city_name, city_code = resolve_city(args.city)
+                query_url = build_query_url(args.keyword, city_code, filters)
+                query_hash = compute_query_hash(query_url)
+                json_path = os.path.join(QUERY_DIR, f"{query_hash}.json")
+
+                print(f"=== Step 1: 列表抓取 ===")
+                print(f"关键词: {args.keyword} | 城市: {city_name}")
+                print(f"JSON 归档: {json_path}")
+
+                db.close()
+                result = scrape_list(
+                    args.keyword, args.city, max_pages, filters, json_path,
+                    cdp_port=args.cdp_port, fmt=args.format,
+                    allow_dom_fallback=args.allow_dom_fallback,
+                    diff_base=args.diff_base,
+                )
+                db.connect()
+                db.init_schema()
+
+            # 导入列表到 DB
+            inserted, skipped = db.import_list_from_json(json_path)
+            print(f"导入列表: {inserted} 新增, {skipped} 跳过")
+
+        if step in ("detail", "all"):
+            # ── Step 2: 详情抓取 ──
+            print(f"\n=== Step 2: 详情处理 ===")
+
+            if args.detail_json_dir:
+                # 从指定目录导入
+                detail_dir = args.detail_json_dir
+                print(f"来源目录: {detail_dir}")
+                json_paths = []
+                for fp in glob.glob(os.path.join(detail_dir, "*.json")):
+                    brand_id = os.path.basename(fp).replace(".json", "")
+                    json_paths.append((fp, brand_id))
+            elif step == "detail" and not args.list_json:
+                # 扫描 DB 待爬品牌 + 执行详情抓取
+                brands = db.get_pending_detail_brands()
+                print(f"待爬详情: {len(brands)} 个公司")
+
+                os.makedirs(COMPANY_DIR, exist_ok=True)
+                json_paths = []
+                for brand in brands:
+                    brand_id = brand["encrypt_brand_id"]
+                    company_link = brand["company_link"]
+                    if not brand_id or not company_link:
+                        continue
+                    json_path = os.path.join(COMPANY_DIR, f"{brand_id}.json")
+                    print(f"  抓取: {brand['boss_name']} ({brand_id})")
+                    try:
+                        db.close()
+                        detail = scrape_company_detail(company_link, cdp_port=args.cdp_port)
+                        with open(json_path, "w", encoding="utf-8") as f:
+                            json.dump(detail, f, ensure_ascii=False, indent=2)
+                        json_paths.append((json_path, brand_id))
+                        db.connect()
+                        db.init_schema()
+                    except Exception as e:
+                        print(f"  ❌ 失败: {e}")
+                        db.connect()
+                        db.init_schema()
+                        continue
+            else:
+                json_paths = []
+
+            # 导入详情到 DB
+            detail_imported = 0
+            for json_path, brand_id in json_paths:
+                if not os.path.exists(json_path):
+                    continue
+                db.import_detail_from_json(json_path, brand_id)
+                db.mark_detail_done(brand_id)
+                detail_imported += 1
+            print(f"导入详情: {detail_imported} 个公司")
+
+        if step == "insight":
+            # ── Step 3: 洞察（预留） ──
+            print(f"\n=== Step 3: 洞察（预留，待企查查 MCP 接入） ===")
+            brands = db.get_pending_insight_brands()
+            print(f"待获取洞察: {len(brands)} 个公司（功能预留）")
+
+        # 输出统计
+        stats = db.get_stats()
+        print(f"\n📊 DB 统计: {stats['total_jobs']} 职位 | {stats['unique_companies']} 公司 | "
+              f"详情 {stats['done_detail']}/{stats['unique_companies']} | "
+              f"待爬详情 {stats['pending_detail']}")
+    finally:
+        db.close()
+
+
+# ============================================================
 # main
 # ============================================================
 def main():
@@ -2811,6 +2943,16 @@ def main():
                    help="关闭 BOSS 专用浏览器 CDP（与 --stop-chrome 共用隔离 profile）")
     p.add_argument("--close-chrome", action="store_true",
                    help="抓取正常结束后自动关闭专用 Chrome（默认不关；异常退出不触发，保留登录态）")
+    p.add_argument("--db", action="store_true",
+                   help="启用 SQLite 三表桥接模式（company_list / company_detail / company_insight）")
+    p.add_argument("--db-path", default=None,
+                   help=f"自定义 SQLite 数据库路径 (默认 {os.path.expanduser('~/.boss-zhipin-scraper/jobs.db')})")
+    p.add_argument("--step", choices=["list", "detail", "insight", "all"], default="all",
+                   help="执行哪一步（list=仅列表, detail=仅详情, insight=仅洞察(预留), all=完整管道，默认 all）")
+    p.add_argument("--list-json", default=None,
+                   help="指定列表 JSON 路径（跳过列表抓取，直接从 JSON 导入 DB）")
+    p.add_argument("--detail-json-dir", default=None,
+                   help="指定详情 JSON 目录（跳过详情抓取，直接从 JSON 文件导入 DB）")
 
     args = p.parse_args()
 
@@ -2850,6 +2992,11 @@ def main():
 
     if not require_runtime_dependencies("requests", "websocket"):
         sys.exit(1)
+
+    # ── SQLite 三表桥接管道 ──────────────────────────────────────
+    if args.db:
+        _run_db_pipeline(args)
+        return
 
     # 抓取前校验城市，避免无效中文名被原样作为 city 参数继续请求。
     if not args.input:
