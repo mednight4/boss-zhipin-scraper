@@ -5,7 +5,10 @@
   - build_query_url: 构造完整查询 URL
   - compute_query_hash: 计算查询 URL 的 MD5 哈希
   - step1_scrape_list ~ step4_import_details / run_full_pipeline: 分阶段管道
-  - DEFAULT_DB_PATH / QUERY_DIR / COMPANY_DIR: 路径常量
+  - PipelineState: 统一决策入口（状态机）
+  - query: 一键入口便捷函数
+  - print_status: 打印所有查询批次状态
+  - FRESHNESS_HOURS: 查询结果新鲜度（小时）
 """
 
 from scripts.company_list.db import (
@@ -23,6 +26,10 @@ from scripts.company_list.pipeline import (
     step3_scrape_details,
     step4_import_details,
     run_full_pipeline,
+    PipelineState,
+    query,
+    print_status,
+    FRESHNESS_HOURS,
 )
 
 __all__ = [
@@ -37,4 +44,8 @@ __all__ = [
     "step3_scrape_details",
     "step4_import_details",
     "run_full_pipeline",
+    "PipelineState",
+    "query",
+    "print_status",
+    "FRESHNESS_HOURS",
 ]
