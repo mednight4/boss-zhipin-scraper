@@ -150,9 +150,135 @@ python3 "$SUMMARY_PATH" \
   --top 15
 ```
 
-## 参数速查
+## 管道工作流 (Pipeline)
 
-| 参数 | 默认值 | 说明 |
+当需要查询 BOSS直聘职位并获取结构化数据时，使用 `PipelineState` 统一入口。用户给 URL，系统自动决策动作并按状态机推进到两张表就绪。
+
+### 状态图
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> LIST_JSON_SAVED : 列表爬取
+    LIST_JSON_SAVED --> LIST_DB_IMPORTED : 导入 company_list
+    LIST_DB_IMPORTED --> DETAIL_JSON_SAVED : 详情爬取
+    DETAIL_JSON_SAVED --> COMPLETE : 导入 company_detail
+    COMPLETE --> [*]
+
+    note right of LIST_DB_IMPORTED
+        has_detail=0 → 继续爬
+        has_detail=1 → 跳到 COMPLETE
+    end note
+```
+
+### 决策流程
+
+```mermaid
+flowchart TD
+    A[用户给 URL] --> B{DB 有该 query_hash?}
+    B -->|有 + 创建未过期| C[SKIP: 数据够新]
+    B -->|有 + 已过期| D[RESUME_REFRESH]
+    B -->|无| E{JSON 文件存在?}
+    E -->|存在| F[IMPORT_LIST]
+    E -->|不存在| G[SCRAPE_LIST]
+    C --> H[联立查询回答用户]
+    D --> I[删旧数据 → IDLE → run]
+    F --> J[导入 company_list → 详情爬取 → 导入 company_detail]
+    G --> J
+    J --> H
+```
+
+`PipelineState.decide()` 决策优先级：
+
+1. DB 有数据且未过期（`BOSS_QUERY_FRESHNESS_HOURS`，默认 24h）→ **SKIP**（直接联立查询回答）
+2. DB 有数据但过期 → **RESUME_REFRESH**（删旧数据，重新执行完整管线）
+3. 无 DB 数据，JSON 文件存在 → **IMPORT_LIST**（跳过爬取，直接导入 DB）
+4. 什么都没有 → **SCRAPE_LIST**（从头执行完整管线）
+
+新鲜度时长通过环境变量 `BOSS_QUERY_FRESHNESS_HOURS` 配置（详见 `.env.example`）。
+
+### 表关系与联立键
+
+```mermaid
+erDiagram
+    company_list ||--o{ company_detail : "encrypt_brand_id = brand_id"
+    company_list {
+        string encrypt_brand_id PK "公司唯一键"
+        string job_id "职位唯一键"
+        int has_detail "0=待爬 1=已爬"
+    }
+    company_detail {
+        string brand_id PK "公司唯一键"
+        string business_info_json "含统一社会信用代码"
+    }
+```
+
+**联立键**：`company_list.encrypt_brand_id` = `company_detail.brand_id`
+
+```sql
+-- 查询某关键词下职位 + 公司详情
+SELECT cl.title, cl.salary, cl.location,
+       cd.company_name, cd.stage, cd.scale, cd.description
+FROM company_list cl
+LEFT JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+WHERE cl.query_hash = 'xxxx'
+ORDER BY cl.salary DESC;
+```
+
+### 使用方式
+
+```python
+# 一键入口（自动决策跳/查/恢复）
+from scripts.company_list.pipeline import query
+result = query("https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI Agent")
+
+# 分步控制
+from scripts.company_list.pipeline import PipelineState
+pipe = PipelineState("https://...")
+action = pipe.decide()
+if action != "SKIP":
+    pipe.run(keyword="AI Agent", city_input="上海")
+
+# 查看所有批次状态
+from scripts.company_list.pipeline import print_status
+print_status()
+```
+
+### CLI 直接调用
+
+```bash
+# 给 URL 跑完整管道（自动决策跳/查/恢复/刷新）
+python "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent"
+
+# 带筛选条件
+python "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent&scale=303&experience=105"
+```
+
+`--url` 是最简入口：一条 URL 等价于 keyword + city + 所有筛选条件，系统自动解析并跑完整管道。
+
+### 中断恢复场景
+
+| 场景 | decide() 返回 | run() 行为 |
+|------|--------------|-----------|
+| 首次查询 | `SCRAPE_LIST` | 完整执行 step1-4 |
+| JSON 已爬未导入 | `IMPORT_LIST` | 跳过 step1，从 step2 开始 |
+| 列表在 DB，详情未爬完 | (step=LIST_DB_IMPORTED) | 跳过 step1-2，从 step3 开始 |
+| 全部完成，未过期 | `SKIP` | 不调 run()，直接查 DB |
+| 全部完成，已过期 | `RESUME_REFRESH` | 删旧数据后从头 run() |
+
+### Agent 快速参考
+
+Agent 接到 URL 后的决策清单：
+
+1. 计算 `query_hash = MD5(url)[:16]`
+2. 调 `PipelineState.decide()` 决定动作
+3. SKIP → 直接 SQL 联立查询回答
+4. IMPORT_LIST → `run()` 从导入开始
+5. SCRAPE_LIST → `run()` 从头开始
+6. RESUME_REFRESH → 清旧数据后 `run()`
+7. 联立键：`company_list.encrypt_brand_id` = `company_detail.brand_id`
+
+## 参数速查
 |------|--------|------|
 | `--keyword` | AI Agent | 搜索关键词 |
 | `--city` | 上海 | 城市名（中文）或 9 位代码；没传时默认上海，无法识别的城市名会报错退出 |

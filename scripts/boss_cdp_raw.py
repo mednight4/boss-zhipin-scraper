@@ -2704,6 +2704,56 @@ def resolve_setup_browser(setup_chrome, setup_edge, browser_choice):
 # ============================================================
 # SQLite 三表桥接管道
 # ============================================================
+def _run_url_pipeline(args):
+    """解析 BOSS URL -> PipelineState -> 跑完整管道."""
+    from urllib.parse import urlparse, parse_qs, unquote
+    from scripts.company_list.pipeline import PipelineState
+
+    parsed = urlparse(args.url)
+    params = parse_qs(parsed.query)
+
+    keyword = unquote(params.get("query", [""])[0])
+    city = params.get("city", [""])[0]
+    if not city:
+        city = "101020100"
+
+    filters = {}
+    for key in ["scale", "stage", "salary", "experience", "degree", "industry"]:
+        val = params.get(key, [None])[0]
+        if val:
+            filters[key] = val
+
+    print(f"=== URL 管道模式 ===")
+    print(f"URL: {args.url}")
+    print(f"关键词: {keyword} | 城市: {city}")
+    if filters:
+        print(f"筛选: {filters}")
+
+    pipe = PipelineState(args.url)
+    action = pipe.decide()
+    print(f"决策: {action}")
+
+    if action == "SKIP":
+        info = pipe.db.get_query_info(pipe.query_hash)
+        print(f"数据已就绪 (创建时间: {info['oldest_create_time']})")
+        print(f"职位: {info['job_count']} | 详情: {info['detail_done']}/{info['detail_done'] + info['detail_pending']}")
+        pipe.db.close()
+        return
+
+    result = pipe.run(
+        keyword=keyword,
+        city_input=city,
+        filters=filters,
+        max_pages=args.pages,
+        cdp_port=args.cdp_port,
+        fmt=args.format,
+    )
+    pipe.db.close()
+    print(f"\n=== 完成 ===")
+    print(f"状态: {result['step']}")
+    print(f"统计: {result['stats']}")
+
+
 def _run_db_pipeline(args):
     """SQLite 三表桥接的分阶段管道入口."""
     from scripts.company_list.db import (
@@ -2953,6 +3003,8 @@ def main():
                    help="指定列表 JSON 路径（跳过列表抓取，直接从 JSON 导入 DB）")
     p.add_argument("--detail-json-dir", default=None,
                    help="指定详情 JSON 目录（跳过详情抓取，直接从 JSON 文件导入 DB）")
+    p.add_argument("--url", default=None,
+                   help="BOSS 查询 URL，自动解析 keyword/city/filters 并跑完整管道")
 
     args = p.parse_args()
 
@@ -2992,6 +3044,11 @@ def main():
 
     if not require_runtime_dependencies("requests", "websocket"):
         sys.exit(1)
+
+    # ── URL 管道模式 ──────────────────────────────────────────
+    if args.url:
+        _run_url_pipeline(args)
+        return
 
     # ── SQLite 三表桥接管道 ──────────────────────────────────────
     if args.db:
