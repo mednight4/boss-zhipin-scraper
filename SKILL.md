@@ -1,10 +1,10 @@
 ---
 name: boss-zhipin-scraper
-description: "Scrape BOSS直聘 (job listing site) via Chrome CDP. Searches jobs by keyword/city/filters, fetches JD details, outputs structured JSON/CSV with plaintext salary, and can summarize scraped results into a job-market prompt. Use when user wants to search/analyze jobs on BOSS直聘 or zhipin.com."
+description: "Scrape BOSS直聘 via Chrome CDP. Searches jobs by keyword/city/filters, fetches JD details, outputs structured JSON/CSV with plaintext salary, and can summarize scraped results into a job-market prompt. Use when user wants to search/analyze jobs on BOSS直聘 or zhipin.com."
 version: 2.4.0
 author: eatmoreduck
 license: MIT
-platforms: [macos, linux]
+platforms: [macos, linux, windows]
 metadata:
   hermes:
     tags: [scraper, jobs, career, cdp, chrome, zhipin, boss直聘]
@@ -12,127 +12,347 @@ metadata:
 
 # BOSS直聘职位抓取工具 v2.4
 
-通过 Chrome CDP 协议抓取 BOSS直聘 (zhipin.com) 职位数据，输出结构化 JSON/CSV（含明文薪资），并可对已抓取结果生成聚合摘要和求职材料优化提示词。
+通过 Chrome CDP 协议抓取 BOSS直聘 (zhipin.com) 职位数据，输出结构化 JSON/CSV（含明文薪资），并可通过 SQLite 三表桥接管道持久化与查询。
 
-## 前置条件
+---
 
-- Chrome 浏览器已安装
-- Python 3.10+
-- 用户已登录 zhipin.com（或愿意手动登录）
+## 1. 决策入口
 
-## 脚本位置
+每次接到查询/抓取需求时，**先做这两步**，决定走哪条主线。
 
-- `scripts/boss_cdp_raw.py`：抓取主脚本
-- `scripts/job_summary.py`：抓取后摘要和提示词脚本
-- `scripts/company_detail/extractor.py`：公司详情提取模块
-- `scripts/company_list/db.py`：SQLite 三表桥接数据访问层
-- `scripts/company_list/pipeline.py`：分阶段管道编排 + PipelineState 状态机
-- `scripts/company_insight/__init__.py`：企查查洞察子包（预留）
-
-安装到 Hermes skills 目录时需一并复制：
-
-```bash
-cp boss-zhipin-scraper/scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
-cp boss-zhipin-scraper/scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
-cp boss-zhipin-scraper/scripts/company_detail/extractor.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
-cp boss-zhipin-scraper/scripts/company_list/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
-cp boss-zhipin-scraper/scripts/company_list/db.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
-cp boss-zhipin-scraper/scripts/company_list/pipeline.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
-```
-
-运行前先确定脚本绝对路径（详见 [skill/install.md](skill/install.md)）。
-
-## 依赖安装
-
-```bash
-uv add websocket-client requests beautifulsoup4
-```
-
-
-
-## 自动化流程
-
-当用户要求搜索/抓取 BOSS直聘 职位时，按以下顺序执行：
-
-### 1. 检查环境
+### 1.1 环境检查
 
 ```bash
 python3 "$SCRIPT_PATH" --check --cdp-port 9222
 ```
 
-- 全部通过 → 跳到第 3 步
-- CDP 不通 → 继续第 2 步
-- 未登录 → 告诉用户登录后重试
+- 全部通过 → 继续 1.2
+- CDP 不通 / 依赖缺失 → 详见 [skill/install.md](skill/install.md)
 
+### 1.2 PipelineState.decide() 判断路径
 
+```python
+from scripts.company_list.pipeline import PipelineState
 
-### 2. 启动专用浏览器 CDP（仅 CDP 不通时）
-
-```bash
-python3 "$SCRIPT_PATH" --setup-chrome --cdp-port 9222
+pipe = PipelineState(query_url="https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent")
+action = pipe.decide()
 ```
 
+| decide() 返回 | 含义 | 走哪条主线 |
+|---------------||------|-----------|
+| `SKIP` | DB 有数据且未过期（24h 内） | → **主线 B：数据查询** |
+| `SCRAPE_LIST` | 无数据，需从头抓取 | → **主线 A：数据构建** |
+| `IMPORT_LIST` | JSON 已爬但未导入 DB | → **主线 A：数据构建** |
+| `RESUME_REFRESH` | 数据已过期（>24h） | → **主线 A：数据构建** |
 
+---
 
-### 3. 运行抓取
+## 2. 主线 A：数据构建（爬虫·管道）
+
+当 `decide()` 返回非 `SKIP` 时，按以下流程执行。
+
+### A1. 渐进式询问用户需求
+
+**不要直接跑命令。** 按以下顺序逐一确认，每步等用户回答后再进下一步。
+
+#### 展示筛选维度，询问过滤条件
+
+先告诉用户可筛选的维度：
+
+| 维度 | 可选值 |
+|------|--------|
+| 薪资 | 3K以下 / 3-5K / 5-10K / 10-20K / 20-50K / 50K+ |
+| 经验 | 在校生 / 应届生 / 1-3年 / 3-5年 / 5-10年 / 10年+ |
+| 规模 | 0-20人 / 20-99人 / 100-499人 / 500-999人 / 1000-9999人 / 10000+ |
+| 学历 | 大专 / 本科 / 硕士 / 博士 |
+
+如果用户描述不清，**建议去 web 端选好后贴 URL**：
+> "你可以先打开 https://www.zhipin.com/web/geek/jobs ，设好筛选条件后把地址栏 URL 贴给我。"
+
+#### 确认搜索意图（关键词 + 城市）
+
+即使用户给了 URL，也要用自然语言复述理解的意图，请用户确认：
+> "确认一下：你要查 **上海** 的 **AI Agent** 相关职位，筛选条件是 **10-20K + 本科以上**，对吗？"
+
+#### 让用户选择查询深度
+
+| 选项 | 内容 | 估算时间 |
+|------|------|----------|
+| A. 仅列表 | 职位名/薪资/公司/地点 | 1-2 分钟 |
+| B. 列表 + 详情 | 增加融资/规模/主营/官网 | 3-8 分钟 |
+| C. 列表 + MCP | 增加工商注册号/法人/风险 | 1-3 分钟 |
+| D. 全部 | 详情 + MCP 全量 | 5-12 分钟 |
+
+### A2. 构造命令执行
+
+**无论是否使用 `--url`，都必须先完成 A1 的深度选择，再构造命令。**
+
+`--url` 只替代筛选参数（keyword/city/salary/scale 等），**不替代深度选择**。深度由独立参数控制，每次运行必须显式指定。
+
+**优先用 `--url`**（一条 URL = keyword + city + 所有筛选条件）：
 
 ```bash
-# 基础搜索
-python3 "$SCRIPT_PATH" --keyword "关键词" --city 上海 --pages 3
+# 仅列表（用户选 A）
+python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent&salary=405" --pages 3 --no-detail
 
-# 带详情 + 分析报告
-python3 "$SCRIPT_PATH" --keyword "关键词" --city 上海 --pages 3 --detail --max-details 8 --analysis
+# 列表 + 详情（用户选 B）
+python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent&salary=405" --pages 3
 
-# 抓取后摘要
-python3 "$SUMMARY_PATH" --top 15
+# 列表 + 详情 + MCP（用户选 D）
+python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent&salary=405" --pages 3 --db --step all
 ```
 
-
-
-## Pipeline（管道查询）
-
-当用户提出查询需求时，**不要直接跑管道**，先按渐进式询问流程确认需求：
-
-1. **展示筛选条件** — 先展示常见筛选字段（薪资/经验/规模/学历），询问用户需要哪些过滤
-2. **确认搜索意图** — 过滤条件确认后，再确认关键词/城市，不清楚就让用户去 web 选好后贴链接
-3. **选择深度** — 让用户选：仅列表 / 列表+详情 / 列表+MCP / 全部，并说明时间代价
-4. **检查 MCP 可用性** — 含 MCP 选项时先确认企查查 MCP 是否可用
-
-详细询问流程、深度选项、筛选字段 → [skill/pipeline.md](skill/pipeline.md)
+没有 URL 时用筛选参数：
 
 ```bash
-# 用户确认选项后，给 URL 执行
-python "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent"
+python3 "$SCRIPT_PATH" \
+  --keyword "AI Agent" \
+  --city 上海 \
+  --salary 405 \
+  --degree 203 \
+  --scale 303,304 \
+  --pages 3 \
+  --db \
+  --step all
 ```
 
-`--url` 是最简入口：一条 URL 等价于 keyword + city + 所有筛选条件。
+**禁止行为**：收到 URL 后直接 `python --url "..." --pages 10` 而不问深度。URL 只给了筛选条件，没给深度。
 
-详情与 MCP 无耦合，可任意组合。
+### A3. 管道推进
 
-## 常见问题
+PipelineState 按状态机推进，自动跳过已完成步骤：
 
-1. **--check CDP 不通** → 运行 `--setup-chrome`
-2. **--check 未登录** → 在专用 Chrome 中访问 zhipin.com 登录，或重新运行 `--setup-chrome`
-3. **薪资空白** → 通常是未登录、登录态失效；先重新登录，不要优先做字体解密
+```
+IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_JSON_SAVED → COMPLETE
+```
 
+| 步骤 | 做什么 | 产物 |
+|------|--------|------|
+| step1 | 列表抓取 | `output/query/{query_hash}.json` |
+| step2 | JSON 导入 DB | `company_list` 表 |
+| step3 | 扫描 `has_detail=0` → 逐公司爬取 | `output/company/{brand_id}.json` |
+| step4 | 导入详情 → 更新 `has_detail=1` | `company_detail` 表 |
 
+中断恢复：`decide()` 自动检测当前状态，`run()` 从断点继续。详见 [skill/pipeline.md](skill/pipeline.md)。
 
-## 子模块索引
+---
 
+## 3. 主线 B：数据查询（SQL·分析）
 
-| 何时读                           | 文件                                       |
-| ----------------------------- | ---------------------------------------- |
-| Pipeline 状态机、决策流程、SQL 查询、文件路径 | [skill/pipeline.md](skill/pipeline.md)   |
-| 完整参数速查、筛选条件、输出格式、工作原理         | [skill/reference.md](skill/reference.md) |
-| 脚本路径查找、curl/clone 安装 skill    | [skill/install.md](skill/install.md)     |
+当 `decide()` 返回 `SKIP`（数据已就绪），或用户需要对已有数据做分析时执行。
 
+### B1. 表结构
 
+#### company_list（主表 — 每行一个职位）
 
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `job_id` | TEXT UNIQUE | 业务主键 |
+| `query_url` | TEXT | 完整查询 URL |
+| `query_hash` | TEXT | MD5(url)[:16]，批次标识 |
+| `keyword` / `city` / `city_code` | TEXT | 搜索关键词 / 城市名 / 9位码 |
+| `filters_json` | TEXT | 筛选条件 JSON |
+| `title` / `salary` / `location` | TEXT | 职位名 / 薪资 / 地点 |
+| `tags` | TEXT | 经验+学历标签 |
+| `boss_name` / `boss_title` / `boss_active_status` | TEXT | 招聘者 / 职位 / 活跃状态 |
+| `company_scale` / `company_stage` / `company_industry` | TEXT | 规模 / 融资阶段 / 行业 |
+| `skills` / `welfare` | TEXT | 技能标签 / 福利 |
+| `encrypt_brand_id` | TEXT | 公司唯一键（联立键） |
+| `is_new` | INTEGER | 本轮是否新增 |
+| `has_detail` / `has_insight` | INTEGER | 详情/洞察是否已爬 |
 
-## 注意事项
+#### company_detail（公司详情 — 每家公司一行）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `brand_id` | TEXT UNIQUE | 公司唯一键（联立键） |
+| `company_name` / `stage` / `scale` / `industry` | TEXT | 公司名 / 阶段 / 规模 / 行业 |
+| `job_count` / `boss_count` | INTEGER | 在招职位数 / BOSS 数 |
+| `hot_jobs_json` | TEXT | 热招职位列表 |
+| `description` / `website` | TEXT | 公司简介 / 官网 |
+| `products_json` | TEXT | 产品列表 |
+| `business_info_json` | TEXT | 工商信息（含统一社会信用代码） |
+| `address` / `work_hours` / `work_type` | TEXT | 地址 / 工时 / 工作类型 |
+| `benefits_json` / `recruiters_json` / `executives_json` | TEXT | 福利 / 招聘者 / 高管 |
+
+#### company_insight（企查查洞察 — 预留）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `brand_id` | TEXT UNIQUE | 公司唯一键 |
+| `credit_code` | TEXT | 统一社会信用代码 |
+| `legal_person` / `registered_capital` | TEXT | 法人 / 注册资本 |
+| `establish_date` / `business_scope` / `business_status` | TEXT | 成立日期 / 经营范围 / 状态 |
+
+**联立键**：`company_list.encrypt_brand_id` = `company_detail.brand_id`
+
+### B2. 数据过期警告
+
+**查询前必须检查数据 freshness。**
+
+数据有效期由 `BOSS_QUERY_FRESHNESS_HOURS` 环境变量控制，默认 **24 小时**。
+
+```python
+from datetime import datetime, timedelta
+
+# 检查数据是否过期
+info = db.get_query_info(query_hash)
+if info:
+    age = datetime.now() - datetime.fromisoformat(info["oldest_create_time"])
+    if age > timedelta(hours=24):
+        print("⚠️ 数据已过期（>24h），需要返回主线 A 重新抓取")
+```
+
+**过期的后果**：
+- DB 中的数据仍在，但可能已不准确（职位下架、薪资变动）
+- `PipelineState.decide()` 返回 `RESUME_REFRESH`，agent 应回主线 A 重新抓取
+
+### B3. 查询方法
+
+通过 Python sqlite3 直接查询 `output/jobs.db`：
+
+```python
+import sqlite3
+
+conn = sqlite3.connect("output/jobs.db")
+conn.row_factory = sqlite3.Row
+
+# 基础查询模板
+rows = conn.execute("""
+    SELECT cl.title, cl.salary, cd.company_name, cd.stage
+    FROM company_list cl
+    LEFT JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+    WHERE cl.query_hash = ?
+""", (query_hash,)).fetchall()
+```
+
+### B4. 常用查询案例
+
+```python
+# 案例 1: 薪资分布统计
+rows = conn.execute("""
+    SELECT salary, COUNT(*) as cnt FROM company_list
+    WHERE salary != ''
+    GROUP BY salary ORDER BY cnt DESC
+""").fetchall()
+
+# 案例 2: 某行业的公司（去重）
+rows = conn.execute("""
+    SELECT DISTINCT cl.encrypt_brand_id,
+           cd.company_name, cd.stage, cd.scale
+    FROM company_list cl
+    JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+    WHERE cd.industry LIKE '%AI%' OR cd.industry LIKE '%人工智能%'
+""").fetchall()
+
+# 案例 3: 详情爬取进度
+stats = conn.execute("""
+    SELECT
+        COUNT(*) as total_jobs,
+        COUNT(DISTINCT encrypt_brand_id) as total_companies,
+        SUM(has_detail) as done_detail,
+        COUNT(DISTINCT encrypt_brand_id) - SUM(has_detail) as pending_detail
+    FROM company_list
+""").fetchone()
+
+# 案例 4: 所有查询批次概览
+batches = conn.execute("""
+    SELECT query_hash, MIN(keyword) as keyword, MIN(city) as city,
+           COUNT(*) as cnt, MIN(create_time) as oldest
+    FROM company_list
+    GROUP BY query_hash ORDER BY oldest DESC
+""").fetchall()
+
+# 案例 5: 新增岗位（is_new=1）
+new_jobs = conn.execute("""
+    SELECT title, salary, boss_name FROM company_list
+    WHERE is_new = 1 ORDER BY create_time DESC
+""").fetchall()
+```
+
+### B5. 关键索引
+
+查询时优先使用已建索引的字段：
+
+| 索引名 | 字段 | 适用场景 |
+|--------|------|----------|
+| `idx_cl_query_hash` | `query_hash` | 按查询批次筛选 |
+| `idx_cl_brand_id` | `encrypt_brand_id` | 按公司联立查询 |
+| `idx_cl_has_detail` | `has_detail` | 筛选待爬详情 |
+| `idx_cd_brand_id` | `brand_id` | 详情表主键查找 |
+
+---
+
+## 4. 命令速查
+
+### 最简入口（URL 模式）
+
+```bash
+python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent"
+python3 "$SCRIPT_PATH" --url "..." --pages 5
+```
+
+### 分步管道（`--db --step`）
+
+```bash
+python3 "$SCRIPT_PATH" --keyword "AI Agent" --city 上海 --pages 3 --db --step list
+python3 "$SCRIPT_PATH" --db --step detail
+python3 "$SCRIPT_PATH" --db --step all --list-json output/query/abc123.json
+```
+
+### 筛选参数
+
+| 参数 | 值 |
+|------|-----|
+| `--scale` | 301=0-20人 302=20-99 303=100-499 304=500-999 305=1000-9999 306=10000+ |
+| `--salary` | 402=3K以下 403=3-5K 404=5-10K 405=10-20K 406=20-50K 407=50K+ |
+| `--experience` | 108=在校生 102=应届生 101=经验不限 103=1年内 104=1-3年 105=3-5年 106=5-10年 107=10年+ |
+| `--degree` | 209=初中及以下 208=中专/中技 206=高中 202=大专 203=本科 204=硕士 205=博士 |
+
+### 输出格式
+
+```bash
+python3 "$SCRIPT_PATH" --url "..." --output result.json            # JSON（默认）
+python3 "$SCRIPT_PATH" --url "..." --format csv                     # CSV（UTF-8 BOM）
+python3 "$SCRIPT_PATH" --url "..." --output list.json --detail-output details.json  # 分开输出
+```
+
+---
+
+## 5. 常见问题
+
+| 问题 | 解法 |
+|------|------|
+| CDP 不通 | 详见 [skill/install.md](skill/install.md) 启动 Chrome |
+| 薪资空白 | 未登录或登录态失效，重新登录 |
+| 抓取中途无数据 | 可能触发风控，等一会或换 `--allow-dom-fallback` |
+| DB 查询不到数据 | 确认管道 `--step all` 已执行完毕 |
+| 数据过期（>24h） | `decide()` 返回 `RESUME_REFRESH`，重新走主线 A |
+| 查询结果为空 | 检查 `query_hash` 是否正确，或确认该批次确实无数据 |
+
+---
+
+## 6. 子模块索引
+
+| 何时读 | 文件 |
+|--------|------|
+| Pipeline 状态机、决策表、中断恢复 | [skill/pipeline.md](skill/pipeline.md) |
+| 完整参数速查、输出格式、工作原理 | [skill/reference.md](skill/reference.md) |
+| 安装、首次部署 | [skill/install.md](skill/install.md) |
+
+---
+
+## 7. 注意事项
 
 - 仅用于个人求职研究
-- 单次最多 10 页（300 条），防封号
+- 单次最多 10 页（~300 条），防封号
 - 翻页间隔 12-22 秒随机延迟
-- BOSS直聘可能更新 API 路径，失效时需更新脚本中 `API_JOB_LIST_PATH` 常量
+- 详情页抓取间隔 10-20 秒随机延迟
 
+---
+
+## 8. 安装说明
+
+详见 [skill/install.md](skill/install.md)。
+
+首次运行需要：Chrome 已安装 → Python 3.10+ → `uv add websocket-client requests beautifulsoup4` → `--setup-chrome` 启动 CDP。

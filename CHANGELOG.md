@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 变更
+- SKILL.md 双主线重构：将 SKILL.md 从线性结构重构为"决策入口 + 双主线"结构。新增「决策入口」顶层 section（`--check` 环境检查 + `PipelineState.decide()` 判断路径），两条平级主线：主线 A「数据构建」内联渐进式询问流程（筛选→意图→深度）+ 命令构造 + 管道推进，主线 B「数据查询」含三张表完整字段说明、数据过期警告（`BOSS_QUERY_FRESHNESS_HOURS=24h` 超期需回主线 A 重新抓取）、sqlite3 查询模板与常用案例。`skill/pipeline.md` 重写为纯技术参考（移除渐进式询问，只保留状态机图、决策表、中断恢复场景）。`SKILL.md` 安装说明改为一行链接到 `skill/install.md`，`platforms` 补充 `windows`。规范文档见 `specs/task_skill_dual_mainline.md`
 - extractor 反爬机制补全：`scripts/company_detail/extractor.py` 新增 `_human_scroll`（15% 概率回看滚动 + 阅读停顿）、`_human_mouse_jitter`（40% 概率鼠标移动）仿真人类浏览行为，`scrape_company_detail` 新增 `delay` 参数（默认 15s，实际间隔 10-20s 随机）控制公司间抓取节奏，对齐 `boss_cdp_raw.py` 详情链路防护等级，降低 `_security_check` 风控触发风险
 - 新增 `--url` CLI 参数：`boss_cdp_raw.py` 新增 `--url` 参数，用户给一条 BOSS 查询 URL 即可一键跑完整管线。系统自动解析 URL 中的 keyword/city/filters，通过 PipelineState 决策并推进到两张表就绪。URL 是语义最精确的查询方式，一条 URL 等价于 keyword + city + 所有筛选条件的组合。规范文档见 `specs/task_cli_url.md`
 - 新增 Pipeline 状态机与统一决策入口：`scripts/company_list/pipeline.py` 新增 `PipelineState` 类作为管线统一入口。用户给 URL → `decide()` 自动判断跳过/导入/爬取/刷新 → `run()` 按状态机推进到两张表就绪。状态流转：`IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_JSON_SAVED → COMPLETE`，支持从任意断点恢复。决策逻辑：DB 有数据且未过期（`BOSS_QUERY_FRESHNESS_HOURS`，默认 24h）→ 跳过；DB 有数据但过期 → 删旧重爬；无 DB 数据但有 JSON → 跳过爬取直接导入；什么都没有 → 从头爬取。`db.py` 新增 `get_query_info` / `get_all_query_hashes` / `delete_query` 三个查询方法支撑决策。`pipeline.py` 新增模块级便捷函数 `query()`（一键入口）和 `print_status()`（批次状态打印）。`SKILL.md` 新增管道工作流章节，含状态图、决策流程图、表关系 ER 图、联立键说明、Agent 快速参考清单、中断恢复场景表。规范文档见 `specs/task_pipeline_state_machine.md`
