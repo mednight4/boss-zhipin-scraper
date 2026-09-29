@@ -20,15 +20,43 @@ OUTPUT_DIR = PROJECT_ROOT / "data"
 CDP_PORT = 9222
 
 
+# ── 人类行为仿真 ─────────────────────────────────────────────────
+def _human_scroll(ws, sid):
+    """模拟人类滚动：随机次数、随机距离、偶尔回看、快慢交替。
+
+    参数与随机分布对齐 boss_cdp_raw.py 的 human_scroll。
+    """
+    for _ in range(random.randint(3, 6)):
+        if random.random() < 0.15:
+            delta = -random.randint(80, 200)
+        else:
+            delta = random.randint(200, 600)
+        ws.eval_js(f"window.scrollBy(0, {delta})", sid)
+        if random.random() < 0.3:
+            time.sleep(random.uniform(2.0, 4.0))
+        else:
+            time.sleep(random.uniform(0.5, 1.5))
+
+
+def _human_mouse_jitter(ws, sid):
+    """偶尔移动鼠标位置，仿真人在页面上活动。"""
+    if random.random() < 0.4:
+        ws.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": random.randint(200, 800),
+            "y": random.randint(200, 600)
+        }, sid)
+        time.sleep(random.uniform(0.5, 1.5))
+
+
 # ── 文本提取 ────────────────────────────────────────────────────────
 def extract_page_text(ws, sid, url: str, scroll_rounds: int = 8) -> dict:
     """导航到 URL 并提取 innerText。"""
     ws.send("Page.navigate", {"url": url}, sid)
     time.sleep(random.uniform(5, 8))
 
-    for _ in range(scroll_rounds):
-        ws.eval_js(f"window.scrollBy(0, {random.randint(200, 600)})", sid)
-        time.sleep(random.uniform(0.8, 1.8))
+    _human_scroll(ws, sid)
+    _human_mouse_jitter(ws, sid)
     ws.eval_js("window.scrollTo(0, 0)", sid)
     time.sleep(0.5)
 
@@ -431,8 +459,12 @@ def parse_executives(text: str) -> list:
 
 
 # ── 主流程 ───────────────────────────────────────────────────────────
-def scrape_company_detail(url: str = COMPANY_URL, cdp_port: int = CDP_PORT) -> dict:
-    """抓取公司详情页并返回结构化数据。"""
+def scrape_company_detail(url: str = COMPANY_URL, cdp_port: int = CDP_PORT, delay: float = 15) -> dict:
+    """抓取公司详情页并返回结构化数据。
+
+    delay: 公司间间隔基准秒数，实际间隔为 random.uniform(delay-5, delay+5)。
+           传 0 可禁用延迟（测试用）。
+    """
     ws = CDPSession(cdp_port)
     tid, sid = create_page_session(ws, background=True)
 
@@ -470,6 +502,11 @@ def scrape_company_detail(url: str = COMPANY_URL, cdp_port: int = CDP_PORT) -> d
     finally:
         ws.send("Target.closeTarget", {"targetId": tid})
         ws.close()
+        # 公司间随机延迟，对齐 boss_cdp_raw.py 详情链路的 10-25s 节奏
+        if delay > 0:
+            gap = random.uniform(max(delay - 5, 5), delay + 5)
+            print(f"  等待 {gap:.0f}s 后抓下一个...\n")
+            time.sleep(gap)
 
 
 def main():
