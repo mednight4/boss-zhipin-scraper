@@ -2890,6 +2890,7 @@ def main():
     # Windows 控制台默认 GBK 无法编码输出中的 emoji/部分中文，会直接 UnicodeEncodeError
     # （实测 73 个单测中 8 个因此失败）。统一重配为 UTF-8，输出用 errors=replace 兜底。
     configure_console_encoding()
+    from scripts.company_list.db import DEFAULT_DB_PATH as _DEFAULT_DB_PATH
     p = argparse.ArgumentParser(
         description=f"BOSS直聘抓取 + 分析 (CDP Raw) v{__version__}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2996,7 +2997,7 @@ def main():
     p.add_argument("--db", action="store_true",
                    help="启用 SQLite 三表桥接模式（company_list / company_detail / company_insight）")
     p.add_argument("--db-path", default=None,
-                   help=f"自定义 SQLite 数据库路径 (默认 {os.path.expanduser('~/.boss-zhipin-scraper/jobs.db')})")
+                   help=f"自定义 SQLite 数据库路径 (默认 {_DEFAULT_DB_PATH})")
     p.add_argument("--step", choices=["list", "detail", "insight", "all"], default="all",
                    help="执行哪一步（list=仅列表, detail=仅详情, insight=仅洞察(预留), all=完整管道，默认 all）")
     p.add_argument("--list-json", default=None,

@@ -225,6 +225,16 @@ WHERE cl.query_hash = 'xxxx'
 ORDER BY cl.salary DESC;
 ```
 
+### 文件路径
+
+| 用途 | 路径 | 说明 |
+|------|------|------|
+| SQLite 数据库 | `output/jobs.db` | 三表桥接存储 |
+| 列表 JSON | `output/query/{query_hash}.json` | 每次搜索一份原始归档 |
+| 详情 JSON | `output/company/{brand_id}.json` | 每家公司一份原始归档 |
+
+以上路径均相对于项目根目录，可通过 `--db-path` 自定义数据库位置。output/ 不参与版本管理。
+
 ### 使用方式
 
 ```python
@@ -306,6 +316,12 @@ Agent 接到 URL 后的决策清单：
 | `--check` | 关闭 | 环境检查 |
 | `--smoke-test` | 关闭 | 真实 Chrome/CDP 搜索 API smoke test，不写结果文件 |
 | `--version` | - | 查看版本号 |
+| `--db` | 关闭 | 启用 SQLite 三表桥接管道（company_list / company_detail） |
+| `--db-path` | output/jobs.db | SQLite 数据库路径 |
+| `--step` | all | 执行哪一步: list / detail / insight / all |
+| `--list-json` | - | 从已有 JSON 导入列表（跳过列表抓取） |
+| `--detail-json-dir` | - | 从已有 JSON 目录导入详情（跳过详情抓取） |
+| `--url` | - | 给 URL 跑完整管道（自动解析 keyword + city + 筛选条件） |
 
 ### 筛选参数
 

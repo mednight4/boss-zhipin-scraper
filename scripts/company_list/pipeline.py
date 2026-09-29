@@ -13,8 +13,6 @@ from scripts.company_list.db import (
     COMPANY_DIR,
 )
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
-
 
 def step1_scrape_list(keyword, city_code, filters, scrape_list_fn, output_path=None):
     """Step 1: 爬取列表 → 保存 JSON → 返回 json_path."""

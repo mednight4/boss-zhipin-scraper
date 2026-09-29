@@ -7,10 +7,11 @@ import hashlib
 from datetime import datetime
 from urllib.parse import urlencode
 
-DEFAULT_DB_PATH = os.path.expanduser("~/.boss-zhipin-scraper/jobs.db")
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
-QUERY_DIR = os.path.join(DATA_DIR, "query")
-COMPANY_DIR = os.path.join(DATA_DIR, "company")
+PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+OUTPUT_DIR = os.path.join(PACKAGE_DIR, "output")
+QUERY_DIR = os.path.join(OUTPUT_DIR, "query")
+COMPANY_DIR = os.path.join(OUTPUT_DIR, "company")
+DEFAULT_DB_PATH = os.path.join(OUTPUT_DIR, "jobs.db")
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS company_list (

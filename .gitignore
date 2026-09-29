@@ -31,6 +31,9 @@ htmlcov/
 # Project-generated local files
 docs/
 
+# 程序输出（抓取结果 JSON + SQLite 数据库），不参与版本管理
+output/
+
 # Local skill tooling config (baoyu-image-gen etc.)
 .baoyu-skills/
 
