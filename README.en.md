@@ -53,6 +53,7 @@ Right after scraping you get: salary ranges, experience requirements, top skill 
 - Cross-run new-job flag (`is_new`): every job carries a boolean marking whether it is new to this run (also shown as 🆕 in the terminal); the baseline defaults to the most recent prior result with the same keyword and city whose filename date is before today; multiple runs on the same day fold into one round; use `--diff-base` to override
 - Dual JSON / CSV output
 - Detail-page JD scraping + skill analysis
+- Company detail extraction: navigates BOSS company pages via CDP, parses structured company info (basic info, hot jobs, 15 business-registration fields, products, work hours & benefits, etc.)
 - Aggregated summary + copy-paste prompt after scraping
 - Incremental writes (no data loss on crash)
 - One-shot environment check + persistent isolated Chrome/Chromium CDP profile
@@ -80,10 +81,12 @@ git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
 cd boss-zhipin-scraper
 
 # 2. Copy into the Hermes skills directory
-mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
+cp scripts/company_detail/extractor.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data
 cp data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 ```
@@ -100,6 +103,11 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py && \
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_detail/__init__.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_detail/extractor.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
@@ -136,6 +144,8 @@ npx clawhub@latest install @eatmoreduck/boss-zhipin-scraper
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
 ```
 
@@ -177,7 +187,7 @@ python3 scripts/job_summary.py --top 15
 | `--keyword` | Search keyword (default "AI Agent") |
 | `--city` | City (Chinese name or 9-digit code, default Shanghai). **Supports cities nationwide** (300+, incl. tier-3/4/5); city codes auto-sync from BOSS at runtime. See [`data/city_codes.json`](data/city_codes.json), or run `--list-cities`. An unrecognized city name now exits with an error instead of silently producing zero results |
 | `--list-cities [keyword]` | Print the supported city list, optional keyword filter, e.g. `--list-cities 江` |
-| `--pages` | Number of pages (max 10) |
+| `--pages` | Number of pages (max 10, overridable via `BOSS_MAX_PAGES` env var) |
 | `--format` | json / csv; csv also exports list and detail CSVs |
 | `--detail` | Scrape detail-page JD (on by default) |
 | `--no-detail` | Do not scrape detail pages |
@@ -238,12 +248,51 @@ boss-zhipin-scraper/
 ├── CHANGELOG.md
 ├── LICENSE
 ├── pyproject.toml
+├── .env.example          # Env config template (BOSS_MAX_PAGES, etc.)
 ├── data/
 │   └── city_codes.json   # Full city-code map
 ├── scripts/
-│   ├── boss_cdp_raw.py   # Main scraping script
-│   └── job_summary.py    # Post-scrape summary + prompt
-└── requirements.txt
+│   ├── boss_cdp_raw.py   # Main scraping script (list + detail)
+│   ├── job_summary.py    # Post-scrape summary + prompt
+│   ├── company_detail/   # Company detail extraction module
+│   │   ├── __init__.py
+│   │   └── extractor.py  # Company page parser (basic info / hot jobs / business reg. etc.)
+│   └── company_list/     # List scraping sub-package (backward compat)
+│       └── __init__.py
+└── tests/
+    ├── company_detail/   # Company detail tests
+    │   ├── __init__.py
+    │   └── test_extractor.py
+    └── company_list/     # List scraping tests (formerly test_chrome_setup.py)
+        ├── __init__.py
+        └── test_chrome_setup.py
+```
+
+## Company Detail Extraction
+
+`scripts/company_detail/extractor.py` provides standalone company information extraction. It navigates to a BOSS company page (`/gongsi/{brand_id}.html`) via CDP, then parses the page text into structured data:
+
+```bash
+# CLI usage
+python -m scripts.company_detail.extractor <company_url>
+
+# Example
+python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
+```
+
+Extracted fields include: basic info (job count, BOSS count, company name, funding stage, scale, industry), hot job list (salary/title/experience/degree/location/status), company description, website, products, business registration info (15 fields including legal representative, registered capital, address, etc.), work hours & benefits, recruiters, executives.
+
+Programmatic usage:
+
+```python
+from scripts.company_detail.extractor import scrape_company_detail, parse_basic_info, parse_hot_jobs
+
+# Full scrape (requires live Chrome CDP)
+company = scrape_company_detail("https://www.zhipin.com/gongsi/abc123.html")
+
+# Pure text parsing (no Chrome needed)
+basic = parse_basic_info(page_text)
+jobs = parse_hot_jobs(page_text)
 ```
 
 ## How It Works

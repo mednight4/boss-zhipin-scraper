@@ -3,6 +3,11 @@
 ## 未发布
 
 ### 变更
+- 新增公司详情提取模块 `scripts/company_detail/`：独立的 `extractor.py` 复用 `boss_cdp_raw.py` 的 `CDPSession` / `create_page_session` 导航 BOSS 公司页面（`/gongsi/{brand_id}.html`），通过 CDP 获取 `document.body.innerText` 后解析结构化公司信息，含基本信息（在招职位数、BOSS 数、公司名、融资阶段、规模、行业）、热招职位列表、公司简介、产品介绍、工商信息（15 个注册地址/法人/资本等字段）、地址、工作时间及福利、招聘人员、高管。提供 `scrape_company_detail(url, cdp_port)` 高级 API 与 `__main__` CLI 入口（`python -m scripts.company_detail.extractor <url>`），输出 JSON 至 `data/` 目录。提供多个可独立使用的纯文本解析函数（`parse_basic_info` / `parse_hot_jobs` / `parse_business_info` 等，无需 Chrome）。配套 `tests/company_detail/test_extractor.py`（纯解析单用例，不依赖真实 Chrome）
+- 测试目录重组：`tests/test_chrome_setup.py` → `tests/company_list/test_chrome_setup.py`（路径层级 `parents[1]` → `parents[2]`）；新增 `tests/company_detail/`、`tests/company_list/` 子包
+- `tests/test_job_summary.py` 删除（不再维护）
+- 单次最大页数 `MAX_PAGES` 由硬编码改为环境变量 `BOSS_MAX_PAGES` 可配置（默认 10），新增 `.env.example` 配置模板
+- 依赖新增 `beautifulsoup4>=4.15.0`（`pyproject.toml` 与 `uv.lock` 同步更新）
 - README 双语新增 skills.sh 一键安装方式：`npx skills add eatmoreduck/boss-zhipin-scraper`。skills.sh 已收录本技能，Agent Skills 兼容 agent（Claude Code、Codex、Gemini CLI、Cursor 等）可一条命令安装技能形态（SKILL.md、脚本、城市码表随技能分发）；另补 ClawHub（OpenClaw 生态技能注册表）安装方式：`npx clawhub@latest install @eatmoreduck/boss-zhipin-scraper`
 - 新增 Issue 标签约定（#58）：`CONTRIBUTING.md` 增加标签语义表与打标原则（`wontfix`/`invalid` 关闭须留理由），`AGENTS.md` 补 issue 分诊打标指引；开放 issue 已完成首轮打标
 - 文档同步被动捕获架构（#56）：`AGENTS.md` 重写架构关键点（列表=Network 被动捕获、焦点仿真进 CDP 不变量、BOSS 页面行为事实），新增两条硬规则（动抓取链路必须真机 e2e；合规红线：只被动捕获、禁止指纹伪造/验证码绕过/代理轮换），补合并惯例与 spike 脚本约定；README 双语登录探测段落同步为被动捕获表述

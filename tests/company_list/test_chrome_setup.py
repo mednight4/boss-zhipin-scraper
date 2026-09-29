@@ -23,7 +23,7 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 
-SCRIPT_PATH = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "boss_cdp_raw.py"
+SCRIPT_PATH = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "boss_cdp_raw.py"
 
 
 def load_module():

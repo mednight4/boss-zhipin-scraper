@@ -34,6 +34,8 @@ python3 scripts/boss_cdp_raw.py --setup-chrome
 # 也可以显式使用 Microsoft Edge：
 # python3 scripts/boss_cdp_raw.py --setup-edge
 
+本机启动方式, agent注意, 使用 uv run python -m scripts.boss_cdp_raw --setup-edge
+
 # 3. 抓取 + 分析
 python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --analysis
 
@@ -55,6 +57,7 @@ python3 scripts/job_summary.py
 - 跨轮新增标记（`is_new`）：每条岗位带布尔字段标识「是否为本次新增」（终端同步以 🆕 显示），基准自动取同关键词同城市、日期早于本轮的最近一份结果；同一天多轮抓取折叠为一轮，`--diff-base` 可显式指定
 - JSON / CSV 双格式输出
 - 详情页 JD 抓取 + 技能分析
+- 公司详情提取：通过 CDP 导航 BOSS 公司页面，解析结构化公司信息（基本信息、热招职位、工商信息 15 字段、产品介绍、工作时间及福利等）
 - 抓取后聚合摘要 + 可复制提示词
 - 增量写入（异常退出不丢数据）
 - 一键环境检查 + 持久隔离 Chrome/Chromium CDP profile
@@ -82,10 +85,12 @@ git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
 cd boss-zhipin-scraper
 
 # 2. 复制到 Hermes skills 目录
-mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
+cp scripts/company_detail/extractor.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data
 cp data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 ```
@@ -102,6 +107,11 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py && \
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_detail/__init__.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_detail/extractor.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
@@ -138,6 +148,8 @@ npx clawhub@latest install @eatmoreduck/boss-zhipin-scraper
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
 ```
 
@@ -179,7 +191,7 @@ python3 scripts/job_summary.py --top 15
 | `--keyword` | 搜索关键词（默认 "AI Agent"） |
 | `--city` | 城市（中文或 9 位代码，默认上海）。**支持全国城市**（一二三四五线全覆盖，共 300+ 个），运行时自动从 BOSS 同步最新城市码；码表见 [`data/city_codes.json`](data/city_codes.json)，或用 `--list-cities` 查看。本地及在线码表均无法识别的城市名会报错退出，避免静默得到 0 条结果 |
 | `--list-cities [关键词]` | 打印支持的城市列表，可选关键词过滤，如 `--list-cities 江` |
-| `--pages` | 页数（上限 10） |
+| `--pages` | 页数（上限可通过 `BOSS_MAX_PAGES` 环境变量覆盖，默认 10） |
 | `--format` | json / csv；csv 会同时导出列表和详情 CSV |
 | `--detail` | 抓取详情页 JD（默认开启） |
 | `--no-detail` | 不抓取详情页 |
@@ -239,12 +251,51 @@ boss-zhipin-scraper/
 ├── CHANGELOG.md
 ├── LICENSE
 ├── pyproject.toml
+├── .env.example          # 环境变量配置模板（BOSS_MAX_PAGES 等）
 ├── data/
 │   └── city_codes.json   # 全量城市码表
 ├── scripts/
-│   ├── boss_cdp_raw.py   # 抓取主脚本
-│   └── job_summary.py    # 抓取后摘要 + 提示词
-└── requirements.txt
+│   ├── boss_cdp_raw.py   # 抓取主脚本（列表 + 详情）
+│   ├── job_summary.py    # 抓取后摘要 + 提示词
+│   ├── company_detail/   # 公司详情提取模块
+│   │   ├── __init__.py
+│   │   └── extractor.py  # 公司页面解析（基本信息/热招职位/工商信息等）
+│   └── company_list/     # 列表抓取子包（向后兼容）
+│       └── __init__.py
+└── tests/
+    ├── company_detail/   # 公司详情测试
+    │   ├── __init__.py
+    │   └── test_extractor.py
+    └── company_list/     # 列表抓取测试（原 test_chrome_setup.py）
+        ├── __init__.py
+        └── test_chrome_setup.py
+```
+
+## 公司详情提取
+
+`scripts/company_detail/extractor.py` 提供独立的公司信息提取能力，通过 CDP 导航到 BOSS 公司页面（`/gongsi/{brand_id}.html`），解析页面文本提取结构化数据：
+
+```bash
+# 命令行用法
+python -m scripts.company_detail.extractor <company_url>
+
+# 示例
+python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
+```
+
+提取字段包括：基本信息（在招职位数、BOSS 数、公司名、融资阶段、规模、行业）、热招职位列表（含薪资/标题/经验/学历/地点/在线状态）、公司简介、官网链接、产品介绍、工商信息（企业名称、法定代表人、成立时间、注册资本、注册地址等 15 字段）、公司地址、工作时间及福利、招聘人员列表、高管介绍。
+
+程序库调用：
+
+```python
+from scripts.company_detail.extractor import scrape_company_detail, parse_basic_info, parse_hot_jobs
+
+# 完整抓取（需要真实 Chrome CDP）
+company = scrape_company_detail("https://www.zhipin.com/gongsi/abc123.html")
+
+# 纯文本解析（不需要 Chrome）
+basic = parse_basic_info(page_text)
+jobs = parse_hot_jobs(page_text)
 ```
 
 ## 工作原理

@@ -11,21 +11,23 @@
 ```
 scripts/boss_cdp_raw.py   # 核心：抓取 + CLI 主入口（长单文件，行数以实际为准）
 scripts/job_summary.py    # 抓取结果 → Markdown 求职分析摘要
+scripts/company_detail/   # 公司详情提取模块（详见下方架构关键点）
+scripts/company_list/     # 列表抓取子包（向后兼容占位）
 data/city_codes.json      # 全量城市码表（300+ 城市，外置；见下）
-tests/test_chrome_setup.py    # unittest，全 mock，不依赖真实 Chrome/网络
-tests/test_job_summary.py     # 摘要测试
+tests/company_list/test_chrome_setup.py    # unittest，全 mock，不依赖真实 Chrome/网络
+tests/company_detail/test_extractor.py     # 公司详情提取测试
 pyproject.toml            # hatchling 打包；入口 boss-scraper / boss-summary
-requirements.txt          # 仅 requests + websocket-client
+requirements.txt          # requests + websocket-client + beautifulsoup4
 SKILL.md / README(.en).md / CHANGELOG.md / CONTRIBUTING.md
 ```
 
-**重要边界：核心逻辑都放 `scripts/boss_cdp_raw.py`，不要随手新建文件**（见 `CONTRIBUTING.md`「单文件原则」）。`docs/` 被 `.gitignore` 忽略，是本地产物，不要提交。**例外**：`data/city_codes.json` 是城市码表数据（非逻辑代码），外置便于用户查看支持哪些城市；改它要同步跑 `tests.test_chrome_setup` 的城市码表防回归测试。
+**重要边界：核心逻辑都放 `scripts/boss_cdp_raw.py`，不要随手新建文件**（见 `CONTRIBUTING.md`「单文件原则」）。`docs/` 被 `.gitignore` 忽略，是本地产物，不要提交。**例外**：`data/city_codes.json` 是城市码表数据（非逻辑代码），外置便于用户查看支持哪些城市；改它要同步跑 `tests.company_list.test_chrome_setup` 的城市码表防回归测试。**第二例外**：`scripts/company_detail/extractor.py` 是公司详情提取的独立模块（导航公司页面 + 纯文本行解析），与列表/详情抓取路径分离；如需扩展公司字段只改此文件。
 
 ## 环境与命令
 
-- Python **>=3.10**，依赖只有 `requests` + `websocket-client`。用项目里的 `.venv`（`source .venv/bin/activate`），别用 pyenv 全局解释器（会缺依赖报错）。
+- Python **>=3.10**，依赖为 `requests` + `websocket-client` + `beautifulsoup4`。用项目里的 `.venv`（`source .venv/bin/activate`），别用 pyenv 全局解释器（会缺依赖报错）。
 - 包管理用 `uv`（仓库有 `uv.lock`），也可 `pip install -r requirements.txt`。
-- 跑测试：`python3 -m unittest tests.test_chrome_setup`（无需 Chrome / 联网，全 mock）。改了 `job_summary` 再加跑 `tests.test_job_summary`。
+- 跑测试：`python3 -m unittest tests.company_list.test_chrome_setup`（无需 Chrome / 联网，全 mock）。改了 `job_summary` 再加跑 `tests.test_job_summary`。改了 `company_detail` 需跑 `tests.company_detail.test_extractor`。
 - 语法自检：`python3 -m py_compile scripts/boss_cdp_raw.py`。
 - 实跑抓取需要先启动带调试端口的 Chrome：`python3 scripts/boss_cdp_raw.py --setup-chrome`（开 `127.0.0.1:9222`，默认端口见 `DEFAULT_CDP_PORT`），登录后在**另一个终端**跑抓取命令。Chrome 关了端口就没了。
 
@@ -48,6 +50,7 @@ SKILL.md / README(.en).md / CHANGELOG.md / CONTRIBUTING.md
 - **CDP target 焦点/可见性不变量**：统一通过 `create_page_session` 创建页面；自动化 target 默认后台打开并注册 visibility override + **焦点仿真**（`Emulation.setFocusEmulationEnabled`），两者都不可省——后台页真实的 `hidden/hasFocus=false` 状态会让无限滚动加载静默失效（实测 JS override 单独不生效，焦点仿真才解决），同时避免抢用户前台焦点（issue #18/#29）。只有需要用户操作的 `wait_for_login` 显式传 `background=False`。不要绕过 helper 直接新增 `Target.createTarget`。
 - 同一个 Chrome 实例的默认 browser context 下，新开 target **本就共享 cookies**，不要被「新 tab 丢 cookie」的直觉误导。
 - `require_runtime_dependencies("requests", "websocket")` 在多个入口前置检查依赖，缺了会提示安装。
+- `scripts/company_detail/extractor.py` 是公司详情提取的独立模块：复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session` 导航 `/gongsi/{brand_id}.html`，拿到 `document.body.innerText` 后通过纯文本行解析（`parse_basic_info` / `parse_hot_jobs` / `parse_description` / `parse_products` / `parse_business_info` / `parse_work_benefits` / `parse_recruiters` / `parse_executives`）提取结构化字段。有 `scrape_company_detail(url, cdp_port)` 高级 API、`main()` CLI 入口，以及多个可独立使用的 `parse_*` 纯文本解析函数（无需 Chrome）。
 
 ## 提交流程
 

@@ -26,6 +26,8 @@ metadata:
 
 - `scripts/boss_cdp_raw.py`：抓取主脚本
 - `scripts/job_summary.py`：抓取后摘要和提示词脚本
+- `scripts/company_detail/extractor.py`：公司详情提取模块（导航 `/gongsi/{brand_id}.html` 解析结构化公司信息）
+- `scripts/company_detail/__init__.py`：公司详情包初始化
 
 **运行任何命令前，必须先确定脚本的绝对路径。**
 
@@ -46,12 +48,12 @@ SUMMARY_PATH=$(find ~/.hermes/skills -name "job_summary.py" -type f 2>/dev/null 
 
 ## 依赖安装（首次使用必须执行）
 
-脚本依赖 `websocket-client` 和 `requests`。在用户项目的 venv 中安装：
+脚本依赖 `websocket-client`、`requests` 和 `beautifulsoup4`。在用户项目的 venv 中安装：
 
 ```bash
-uv add websocket-client requests
+uv add websocket-client requests beautifulsoup4
 # 或
-pip install websocket-client requests
+pip install websocket-client requests beautifulsoup4
 ```
 
 ## 自动化流程
@@ -271,13 +273,17 @@ python3 "$SCRIPT_PATH" --setup-chrome --reset-chrome-profile --cdp-port 9222
 
 ```bash
 # 推荐：curl 一键安装
-mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts && \
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/boss_cdp_raw.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_detail/__init__.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_detail/extractor.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
@@ -287,10 +293,12 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
 
 ```bash
 git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
-mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail
 cp boss-zhipin-scraper/SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp boss-zhipin-scraper/scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp boss-zhipin-scraper/scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp boss-zhipin-scraper/scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
+cp boss-zhipin-scraper/scripts/company_detail/extractor.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data
 cp boss-zhipin-scraper/data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 ```
