@@ -37,6 +37,37 @@ def _split_lines(text: str) -> list[str]:
     return lines
 
 
+# ── 人类行为仿真 ─────────────────────────────────────────────────
+def _human_scroll(ws, sid):
+    """模拟人类滚动：随机次数、随机距离、偶尔回看、快慢交替。
+
+    参数与随机分布对齐 extractor.py / boss_cdp_raw.py 的 human_scroll。
+    """
+    for _ in range(random.randint(3, 6)):
+        if random.random() < 0.15:
+            # 15% 概率回看（上滚）
+            delta = -random.randint(80, 200)
+        else:
+            delta = random.randint(200, 600)
+        ws.eval_js(f"window.scrollBy(0, {delta})", sid)
+        if random.random() < 0.3:
+            # 30% 概率阅读停顿
+            time.sleep(random.uniform(2.0, 4.0))
+        else:
+            time.sleep(random.uniform(0.5, 1.5))
+
+
+def _human_mouse_jitter(ws, sid):
+    """偶尔移动鼠标位置，仿真人在页面上活动。"""
+    if random.random() < 0.4:
+        ws.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": random.randint(200, 800),
+            "y": random.randint(200, 600)
+        }, sid)
+        time.sleep(random.uniform(0.5, 1.5))
+
+
 # ── 页面交互 ─────────────────────────────────────────────────────
 def navigate_and_click_company(ws, sid, credit_code, timeout=15):
     """导航到爱企查搜索页，提取公司 ID，直接跳转详情页。
@@ -92,12 +123,9 @@ def navigate_and_click_company(ws, sid, credit_code, timeout=15):
 
 
 def extract_page_text(ws, sid, scroll_rounds=6) -> dict:
-    """在当前页面提取 innerText（详情页）。"""
-    for _ in range(scroll_rounds):
-        delta = random.randint(200, 500)
-        ws.eval_js(f"window.scrollBy(0, {delta})", sid)
-        time.sleep(random.uniform(0.5, 1.5))
-
+    """在当前页面提取 innerText（详情页），带仿人工滚动和鼠标抖动。"""
+    _human_scroll(ws, sid)
+    _human_mouse_jitter(ws, sid)
     ws.eval_js("window.scrollTo(0, 0)", sid)
     time.sleep(0.5)
 
@@ -522,12 +550,14 @@ def _clean_business_info_raw(business: dict) -> dict:
     return raw
 
 
-def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT) -> dict:
+def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT, delay: float = 15) -> dict:
     """通过统一社会信用代码抓取爱企查公司详情。
 
     Args:
         credit_code: 统一社会信用代码（如 91310104MA1FR5RY3N）
         cdp_port: Chrome CDP 端口
+        delay: 公司间抓取间隔基准秒数，实际间隔为 delay±5s（最低 5s）。
+               默认 15 → 实际 10-20s，对齐 extractor.py 防护等级。
 
     Returns:
         dict: 结构化的公司工商信息
@@ -539,7 +569,7 @@ def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT) -> dic
         # 1. 导航搜索页 + 点击公司链接
         navigate_and_click_company(ws, sid, credit_code)
 
-        # 2. 提取详情页文本
+        # 2. 提取详情页文本（带仿人工滚动/鼠标抖动）
         raw = extract_page_text(ws, sid)
         text = raw.get("text", "")
         page_url = raw.get("url", "")
@@ -594,6 +624,10 @@ def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT) -> dic
     finally:
         ws.send("Target.closeTarget", {"targetId": tid})
         ws.close()
+        # 公司间随机延迟，仿真人工操作节奏，降低风控触发风险
+        gap = random.uniform(max(delay - 5, 5), delay + 5)
+        print(f"  等待 {gap:.0f}s 后抓下一个...\n")
+        time.sleep(gap)
 
 
 # ── CLI 入口 ─────────────────────────────────────────────────────
@@ -606,6 +640,7 @@ def main():
 
     credit_code = sys.argv[1].strip()
     cdp_port = CDP_PORT
+    delay = 15
 
     # 简单解析 --port 参数
     if "--port" in sys.argv:
@@ -613,8 +648,14 @@ def main():
         if idx + 1 < len(sys.argv):
             cdp_port = int(sys.argv[idx + 1])
 
-    print(f"正在抓取爱企查: credit_code={credit_code}, port={cdp_port}")
-    data = scrape_aqc_by_credit_code(credit_code, cdp_port)
+    # 简单解析 --delay 参数
+    if "--delay" in sys.argv:
+        idx = sys.argv.index("--delay")
+        if idx + 1 < len(sys.argv):
+            delay = float(sys.argv[idx + 1])
+
+    print(f"正在抓取爱企查: credit_code={credit_code}, port={cdp_port}, delay={delay}s")
+    data = scrape_aqc_by_credit_code(credit_code, cdp_port, delay=delay)
 
     # 输出到文件
     out_path = OUTPUT_DIR / f"{credit_code}.json"

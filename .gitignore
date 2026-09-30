@@ -33,6 +33,17 @@ docs/
 
 # 程序输出（抓取结果 JSON + SQLite 数据库），不参与版本管理
 output/
+data/*.json
+!data/city_codes.json
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# 调试脚本（手动 CDP 探针等）
+*_debug*.py
 
 # Local skill tooling config (baoyu-image-gen etc.)
 .baoyu-skills/
@@ -46,5 +57,3 @@ Thumbs.db
 
 # 覆盖全局 gitignore 对 AGENTS.md 的忽略，本项目需要提交
 !AGENTS.md
-
-./zcode

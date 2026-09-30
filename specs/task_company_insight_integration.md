@@ -93,7 +93,6 @@ scale, stage, tags, products, business_info_raw, url, scraped_at
 `registration_authority`, `employee_count`, `scale`, `former_name`
 JSON 扩展：`tags_json`, `products_json`, `top_info_json`, `business_info_raw_json`
 溯源：`url`, `scraped_at`
-状态：`has_insight`（0=待爬 1=已爬）
 
 #### 方法更新
 

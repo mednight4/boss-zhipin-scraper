@@ -228,7 +228,6 @@ IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → COMPLETE
 | `business_info_raw_json` | TEXT | 原始工商信息（调试用，JSON） |
 | `url` | TEXT | 爱企查页面 URL |
 | `scraped_at` | TEXT | 抓取时间 |
-| `has_insight` | INTEGER | 是否已爬（0=待爬 1=已爬） |
 
 **联立键**：`company_list.credit_code` = `company_insight.credit_code`
 
