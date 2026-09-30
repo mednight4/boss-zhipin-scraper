@@ -62,6 +62,8 @@ docs/                     # 本地产物 (.gitignore)，bug 报告、spike 脚�
   ```
   **detail 和洞察可并行**：step2 完成后 `company_list` 已含 `encrypt_brand_id`（详情联立键）和 `credit_code`（洞察联立键），两条路径无依赖。agent 可开两个子线程分别执行 `--step detail` 和 `--step insight`，各自独立写各自的表。`DETAIL_DONE` 和 `INSIGHT_DONE` 都到达后状态归一化为 `COMPLETE`。`scripts/company_insight/scraper.py` 通过 CDP 自爬虫抓取爱企查工商信息，入口为 `scrape_aqc_by_credit_code(credit_code, cdp_port)`，参数 `credit_code` 来自 `company_list` 中 BOSS 返回的统一社会信用代码，CLI 入口为 `python -m scripts.company_insight.scraper <credit_code> [--port 9222]`。step5 从 DB 扫描 `has_insight=0` 的公司 → 读取 `credit_code` → 逐家调用洞察脚本 → 导入 `company_insight` 表。**独立查询**：用户可直接用 `python -m scripts.company_insight.scraper <credit_code>` 对任意统一社会信用代码做单条爱企查查询，无需先跑完整管道。
 
+  > **警告**：不要编写自定义脚本直接操作数据库。所有数据导入必须通过 `db.py` 的 `import_*_from_json()` 方法，否则会导致字段缺失或数据不一致。运行管道请使用 `python3 -m scripts.company_list.pipeline --step <list|detail|insight|all>`。
+
 ## 提交流程
 
 默认分支 `master`，fork/分支工作流：从 `master` 拉新分支（`fix/...`、`feat/...`）→ 改代码补测试 → push → PR。一个 PR 只做一件事。**审 PR / 拉分支前先 `git fetch origin`**——本地 master 落后时 diff 范围会失真（曾把已合并的 #43 误判为 PR 夹带改动）。

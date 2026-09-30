@@ -470,6 +470,25 @@ class JobDatabase:
         )
         self.conn.commit()
 
+    def validate_insight_completeness(self):
+        """检查 company_insight 表中关键字段是否为空的记录。
+
+        返回 (总行数, 不完整行数, 不完整记录列表)。
+        """
+        self.connect()
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT brand_id, company_name, credit_code, legal_person,
+                      company_type, industry, phone, email, website
+               FROM company_insight
+               WHERE company_type IS NULL OR industry IS NULL
+                  OR legal_person IS NULL OR registered_capital IS NULL"""
+        )
+        incomplete = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) FROM company_insight")
+        total = cur.fetchone()[0]
+        return total, len(incomplete), incomplete
+
     def resolve_brand_id_by_credit_code(self, credit_code):
         """通过 credit_code 反查 company_list 中的 encrypt_brand_id.
 

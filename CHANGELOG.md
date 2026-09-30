@@ -52,19 +52,8 @@
 - `--merge` 现在会合并旧详情并落盘到 `--detail-output`（之前只合并列表，详情丢失）
 - API URL filter 改用 `urlencode`（原字符串拼接，filter 值含特殊字符会出错）
 
-### 变更
-- 新增 Microsoft Edge CDP 支持：`--setup-edge`、`--stop-edge` 和 `--browser edge`；保留默认 Chrome 与原有 `--setup-chrome` 参数，Windows 进程识别同时覆盖 `chrome.exe` 和 `msedge.exe`。（#41）
-- 平台支持声明更新为 macOS + Linux + Windows，并补充 Chrome/Edge CDP 启动与进程识别路径
-- 平台支持声明更新：Windows 已通过单元测试与基础 CLI 验证（GBK 控制台崩溃等已修复），README 中英双语同步调整（此前 v2.0.0 撤回的"未经实测"声明在本修复后更新）
-- `pyproject.toml` 删除空的 `[csv]` extra（csv 是标准库）
-- SKILL.md 脚本路径解析改用 Python `os.path.realpath`（macOS 自带 `readlink` 无 `-f`）
-
-### 新增
-- `scripts/job_summary.py` 抓取后摘要脚本：读取已有 JSON，输出岗位聚合摘要和求职材料优化提示词
-- `boss-summary` 命令行入口，便于打包安装后直接运行摘要脚本
-- 抓取后摘要测试：覆盖 JSON 加载、聚合维度、提示词输出和项目边界
-- 版本号一致性测试：校验脚本、pyproject.toml、SKILL.md、README.md 四处版本同步
-- CONTRIBUTING.md 贡献指南
+### 修复
+- pipeline.py 新增 `__main__` CLI 入口：支持 `python -m scripts.company_list.pipeline --step <list|detail|insight|all|status>` 独立运行管道步骤，避免 agent 自行编写脚本绕过 `db.import_*_from_json()` 导致字段缺失。`step5_scrape_insights` 末尾新增 `validate_insight_completeness()` 校验，发现不完整数据立即打印警告。清理 agent 遗留的垃圾脚本（`run_insight.py`、`check_credit_code.py`、`check_insight.py`）
 
 ## v2.0.0 (2026-06)
 

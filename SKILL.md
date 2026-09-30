@@ -373,6 +373,24 @@ python3 "$SCRIPT_PATH" --db --step detail
 python3 "$SCRIPT_PATH" --db --step all --list-json output/query/abc123.json
 ```
 
+### Pipeline 独立入口
+
+```bash
+# 仅运行洞察管道
+python3 -m scripts.company_list.pipeline --step insight
+
+# 仅运行详情管道
+python3 -m scripts.company_list.pipeline --step detail
+
+# 查看当前状态
+python3 -m scripts.company_list.pipeline --step status
+```
+
+> **警告**：不要编写自定义脚本直接操作数据库。
+> 所有数据导入必须通过 `db.py` 的 `import_*_from_json()` 方法，
+> 否则会导致字段缺失或数据不一致。
+> 运行管道请使用 `python3 -m scripts.company_list.pipeline --step <list|detail|insight|all>`。
+
 ### 筛选参数
 
 | 参数 | 值 |

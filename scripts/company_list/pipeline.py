@@ -1,8 +1,10 @@
 """分阶段管道编排 — 列表爬取 → DB 导入 → 详情爬取 → DB 导入 → 洞察爬取 → DB 导入."""
 
+import argparse
 import json
 import os
 import glob
+import sys
 from datetime import datetime
 
 from scripts.company_list.db import (
@@ -133,6 +135,12 @@ def step5_scrape_insights(db, scrape_insight_fn, insight_json_dir=None, delay_ra
 
     if skipped:
         print(f"洞察跳过: {skipped} 个公司 (无 credit_code)")
+
+    # 导入后校验：检查是否有不完整数据
+    total, incomplete_count, _ = db.validate_insight_completeness()
+    if incomplete_count > 0:
+        print(f"⚠️ 警告: company_insight 表中 {incomplete_count}/{total} 行存在空字段")
+
     return imported
 
 
@@ -462,3 +470,89 @@ def print_status():
                   f"{q['job_count']:>6} {q['oldest_create_time'] or '':<22}")
     finally:
         db.close()
+
+
+# ── CLI 入口 ──────────────────────────────────────────────────────
+
+def _insight_fn_factory(cdp_port: int = 9222, delay: float = 15):
+    """创建 insight 抓取函数，绑定 cdp_port 和 delay 参数。"""
+    def _fn(credit_code: str):
+        from scripts.company_insight.scraper import scrape_aqc_by_credit_code
+        return scrape_aqc_by_credit_code(credit_code, cdp_port=cdp_port, delay=delay)
+    return _fn
+
+
+def _detail_fn_factory(cdp_port: int = 9222):
+    """创建 detail 抓取函数，绑定 cdp_port 参数。"""
+    def _fn(company_link: str):
+        from scripts.company_detail.extractor import scrape_company_detail
+        return scrape_company_detail(company_link, cdp_port=cdp_port)
+    return _fn
+
+
+def main():
+    """CLI 入口: python -m scripts.company_list.pipeline --step <list|detail|insight|all|status>"""
+    parser = argparse.ArgumentParser(
+        description="BOSS直聘管道编排器 — 分阶段抓取列表/详情/企查查洞察"
+    )
+    parser.add_argument(
+        "--step",
+        choices=["list", "detail", "insight", "all", "status"],
+        default="status",
+        help="执行步骤: list=列表导入, detail=详情抓取, insight=企查查洞察, all=全部, status=查看状态"
+    )
+    parser.add_argument("--port", type=int, default=9222, help="Chrome CDP 端口 (默认 9222)")
+    parser.add_argument("--db-path", type=str, default=None, help="SQLite 数据库路径 (默认 output/jobs.db)")
+    parser.add_argument("--list-json", type=str, default=None, help="--step list 时指定 JSON 文件路径")
+    parser.add_argument(
+        "--insight-delay", type=float, default=15,
+        help="洞察抓取间隔基准秒数 (实际为 delay±5s, 最低5s)"
+    )
+
+    args = parser.parse_args()
+
+    if args.step == "status":
+        print_status()
+        return
+
+    if args.step == "insight":
+        imported = run_insight_pipeline(
+            scrape_insight_fn=_insight_fn_factory(args.port, args.insight_delay),
+            db_path=args.db_path,
+        )
+        print(f"\n企查查洞察完成: {imported} 家公司")
+        return
+
+    if args.step == "detail":
+        db = JobDatabase(args.db_path)
+        db.connect()
+        db.init_schema()
+        try:
+            imported = step3_scrape_details(db, _detail_fn_factory(args.port))
+            print(f"\n详情抓取完成: {imported} 家公司")
+        finally:
+            db.close()
+        return
+
+    if args.step == "list":
+        if not args.list_json:
+            print("错误: --step list 需要指定 --list-json <path>")
+            sys.exit(1)
+        db = JobDatabase(args.db_path)
+        db.connect()
+        db.init_schema()
+        try:
+            inserted, skipped = step2_import_list(db, args.list_json)
+            print(f"\n列表导入完成: {inserted} 新增, {skipped} 跳过")
+        finally:
+            db.close()
+        return
+
+    if args.step == "all":
+        print("错误: --step all 需要完整的抓取参数 (keyword/city/filters)")
+        print("本 CLI 仅支持独立步骤: list / detail / insight / status")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

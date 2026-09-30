@@ -45,6 +45,12 @@ data/*.json
 # 调试脚本（手动 CDP 探针等）
 *_debug*.py
 
+# Agent 临时脚本（check/run/verify 开头的根目录脚本）
+/check_*.py
+/run_*.py
+/verify_*.py
+/inspect_*.py
+
 # Local skill tooling config (baoyu-image-gen etc.)
 .baoyu-skills/
 
