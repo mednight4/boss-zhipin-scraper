@@ -86,11 +86,15 @@ cd boss-zhipin-scraper
 
 # 2. 复制到 Hermes skills 目录
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
 cp scripts/company_detail/extractor.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
+cp scripts/company_list/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
+cp scripts/company_list/db.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
+cp scripts/company_list/pipeline.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data
 cp data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 ```
@@ -112,6 +116,13 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_detail/extractor.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py && \
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_list/__init__.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/__init__.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_list/db.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/db.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_list/pipeline.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/pipeline.py && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
@@ -150,6 +161,9 @@ ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/extractor.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/__init__.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/db.py
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/pipeline.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
 ```
 
@@ -260,15 +274,20 @@ boss-zhipin-scraper/
 │   ├── company_detail/   # 公司详情提取模块
 │   │   ├── __init__.py
 │   │   └── extractor.py  # 公司页面解析（基本信息/热招职位/工商信息等）
-│   └── company_list/     # 列表抓取子包（向后兼容）
-│       └── __init__.py
+│   ├── company_list/     # SQLite 数据访问层 + 分阶段管道编排
+│   │   ├── __init__.py
+│   │   ├── db.py
+│   │   └── pipeline.py
+│   └── company_insight/  # 企查查洞察子包（预留）
 └── tests/
+    ├── chrome_setup/     # 城市码表防回归测试
+    │   ├── __init__.py
+    │   └── test_chrome_setup.py
     ├── company_detail/   # 公司详情测试
     │   ├── __init__.py
     │   └── test_extractor.py
-    └── company_list/     # 列表抓取测试（原 test_chrome_setup.py）
-        ├── __init__.py
-        └── test_chrome_setup.py
+    └── company_list/     # JobDatabase 单元测试
+        └── test_db.py
 ```
 
 ## 公司详情提取

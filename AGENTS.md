@@ -13,7 +13,7 @@ scripts/boss_cdp_raw.py   # 核心：抓取 + CLI 主入口（长单文件，行
 scripts/job_summary.py    # 抓取结果 → Markdown 求职分析摘要
 scripts/company_detail/   # 公司详情提取模块（详见下方架构关键点）
 scripts/company_list/     # 列表抓取子包：SQLite 数据访问层 + 分阶段管道编排
-scripts/company_insight/  # 企查查洞察子包（预留，建表逻辑已在 db.py）
+scripts/company_insight/  # 企查查洞察子包（CDP 自爬虫，复用 boss_cdp_raw.py 的 CDPSession 导航爱企查详情页）
 data/city_codes.json      # 全量城市码表（300+ 城市，外置；见下）
 tests/chrome_setup/test_chrome_setup.py    # unittest，全 mock，不依赖真实 Chrome/网络
 tests/company_detail/test_extractor.py     # 公司详情提取测试
@@ -21,9 +21,11 @@ tests/company_list/test_db.py             # JobDatabase 单元测试
 pyproject.toml            # hatchling 打包；入口 boss-scraper / boss-summary
 requirements.txt          # requests + websocket-client + beautifulsoup4
 SKILL.md / README(.en).md / CHANGELOG.md / CONTRIBUTING.md
+specs/                    # 任务规范文档 (task_*.md)，每个新特性/修复对应一份 spec
+docs/                     # 本地产物 (.gitignore)，bug 报告、spike 脚本等
 ```
 
-**重要边界：核心逻辑都放 `scripts/boss_cdp_raw.py`，不要随手新建文件**（见 `CONTRIBUTING.md`「单文件原则」）。`docs/` 被 `.gitignore` 忽略，是本地产物，不要提交。**例外**：`data/city_codes.json` 是城市码表数据（非逻辑代码），外置便于用户查看支持哪些城市；改它要同步跑 `tests.chrome_setup.test_chrome_setup` 的城市码表防回归测试。**第二例外**：`scripts/company_detail/extractor.py` 是公司详情提取的独立模块（导航公司页面 + 纯文本行解析，复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session`），与列表/详情抓取路径分离；如需扩展公司字段只改此文件。**第三例外**：`scripts/company_list/db.py` + `pipeline.py` 是 SQLite 数据访问层和分阶段管道编排（列表→DB→详情→DB→洞察），与抓取主链路解耦；如需改查询存储或管道状态机只改这两个文件。**第四例外**：`scripts/company_insight/` 是企查查洞察子包预留占位，对应的 `company_insight` 表已在 `db.py` 中建表。
+**重要边界：核心逻辑都放 `scripts/boss_cdp_raw.py`，不要随手新建文件**（见 `CONTRIBUTING.md`「单文件原则」）。`docs/` 被 `.gitignore` 忽略，是本地产物，不要提交。**例外**：`data/city_codes.json` 是城市码表数据（非逻辑代码），外置便于用户查看支持哪些城市；改它要同步跑 `tests.chrome_setup.test_chrome_setup` 的城市码表防回归测试。**第二例外**：`scripts/company_detail/extractor.py` 是公司详情提取的独立模块（导航公司页面 + 纯文本行解析，复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session`），与列表/详情抓取路径分离；如需扩展公司字段只改此文件。**第三例外**：`scripts/company_list/db.py` + `pipeline.py` 是 SQLite 数据访问层和分阶段管道编排（列表→DB→详情→DB→洞察），与抓取主链路解耦；如需改查询存储或管道状态机只改这两个文件。**第四例外**：`scripts/company_insight/` 是企查查洞察子包，通过 CDP 复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session` 导航爱企查详情页，抓取工商结构化信息，与列表/详情抓取路径分离；如需改洞察字段只改此文件。
 
 ## 环境与命令
 
@@ -53,7 +55,11 @@ SKILL.md / README(.en).md / CHANGELOG.md / CONTRIBUTING.md
 - 同一个 Chrome 实例的默认 browser context 下，新开 target **本就共享 cookies**，不要被「新 tab 丢 cookie」的直觉误导。
 - `require_runtime_dependencies("requests", "websocket")` 在多个入口前置检查依赖，缺了会提示安装。
 - `scripts/company_detail/extractor.py` 是公司详情提取的独立模块：复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session` 导航 `/gongsi/{brand_id}.html`，拿到 `document.body.innerText` 后通过纯文本行解析（`parse_basic_info` / `parse_hot_jobs` / `parse_description` / `parse_products` / `parse_business_info` / `parse_work_benefits` / `parse_recruiters` / `parse_executives`）提取结构化字段。有 `scrape_company_detail(url, cdp_port, delay)` 高级 API（delay 参数控制公司间随机间隔，默认 15s±5s）、`main()` CLI 入口，以及多个可独立使用的 `parse_*` 纯文本解析函数（无需 Chrome）。
-- `scripts/company_list/db.py` 是 SQLite 三表桥接数据访问层（company_list / company_detail / company_insight），提供 `JobDatabase` 类、`build_query_url`、`compute_query_hash` 等。`pipeline.py` 是分阶段管道编排（step1_scrape_list → step2_import_list → step3_scrape_details → step4_import_details），含 `PipelineState` 状态机和 `run_full_pipeline()` 一键入口。`scripts/company_insight/` 是企查查洞察子包预留占位，对应的 `company_insight` 表已在 `db.py` 中建表。
+- `scripts/company_list/db.py` 是 SQLite 三表桥接数据访问层（company_list / company_detail / company_insight），提供 `JobDatabase` 类、`build_query_url`、`compute_query_hash` 等。`pipeline.py` 是分阶段管道编排（step1_scrape_list → step2_import_list → step3_scrape_details → step4_import_details → step5_scrape_insights），含 `PipelineState` 状态机和 `run_full_pipeline()` 一键入口。状态流转：
+  ```
+  IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → INSIGHT_DONE → COMPLETE
+  ```
+  其中 `DETAIL_DONE` 表示详情已抓取完成但洞察（企查查）尚未抓取。`scripts/company_insight/scraper.py` 通过 CDP 自爬虫抓取爱企查工商信息，入口为 `scrape_aqc_by_credit_code(credit_code, cdp_port)`，参数 `credit_code` 来自 `company_list` 中 BOSS 返回的统一社会信用代码，CLI 入口为 `python -m scripts.company_insight.scraper <credit_code> [--port 9222]`。step5 从 DB 扫描 `has_insight=0` 的公司 → 读取 `credit_code` → 逐家调用洞察脚本 → 导入 `company_insight` 表。
 
 ## 提交流程
 

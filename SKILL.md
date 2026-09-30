@@ -44,6 +44,7 @@ action = pipe.decide()
 | `SCRAPE_LIST` | 无数据，需从头抓取 | → **主线 A：数据构建** |
 | `IMPORT_LIST` | JSON 已爬但未导入 DB | → **主线 A：数据构建** |
 | `RESUME_REFRESH` | 数据已过期（>24h） | → **主线 A：数据构建** |
+| `SCRAPE_INSIGHT` | 详情已完成，洞察待抓取 | → **主线 A：数据构建（step5）** |
 
 ---
 
@@ -80,8 +81,8 @@ action = pipe.decide()
 |------|------|----------|
 | A. 仅列表 | 职位名/薪资/公司/地点 | 1-2 分钟 |
 | B. 列表 + 详情 | 增加融资/规模/主营/官网 | 3-8 分钟 |
-| C. 列表 + MCP | 增加工商注册号/法人/风险 | 1-3 分钟 |
-| D. 全部 | 详情 + MCP 全量 | 5-12 分钟 |
+| C. 列表 + 洞察 | 增加工商注册号/法人/风险（CDP 爱企查） | 1-3 分钟 |
+| D. 全部 | 详情 + 洞察 全量 | 5-12 分钟 |
 
 ### A2. 构造命令执行
 
@@ -98,7 +99,7 @@ python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=10102010
 # 列表 + 详情（用户选 B）
 python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent&salary=405" --pages 3
 
-# 列表 + 详情 + MCP（用户选 D）
+# 列表 + 详情 + 洞察（用户选 D）
 python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent&salary=405" --pages 3 --db --step all
 ```
 
@@ -123,15 +124,24 @@ python3 "$SCRIPT_PATH" \
 PipelineState 按状态机推进，自动跳过已完成步骤：
 
 ```
-IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_JSON_SAVED → COMPLETE
+IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → INSIGHT_DONE → COMPLETE
 ```
 
-| 步骤 | 做什么 | 产物 |
-|------|--------|------|
-| step1 | 列表抓取 | `output/query/{query_hash}.json` |
-| step2 | JSON 导入 DB | `company_list` 表 |
-| step3 | 扫描 `has_detail=0` → 逐公司爬取 | `output/company/{brand_id}.json` |
-| step4 | 导入详情 → 更新 `has_detail=1` | `company_detail` 表 |
+| 步骤 | 做什么 | 产物 | 参数流转 |
+|------|--------|------|----------|
+| step1 | 列表抓取 | `output/query/{query_hash}.json` | — |
+| step2 | JSON 导入 DB | `company_list` 表 | — |
+| step3 | 扫描 `has_detail=0` → 逐公司爬取 | `output/company/{brand_id}.json` | `encrypt_brand_id` → 详情页 |
+| step4 | 导入详情 → 更新 `has_detail=1` | `company_detail` 表 | — |
+| step5 | 扫描 `has_insight=0` → 逐公司抓取爱企查 | `output/insight/{credit_code}.json` | `credit_code` → 洞察脚本 |
+
+**step5 洞察脚本说明**：
+
+- 入口函数：`scrape_aqc_by_credit_code(credit_code, cdp_port)`
+- CLI 用法：`python -m scripts.company_insight.scraper <credit_code> [--port 9222]`
+- 数据来源：`company_list` 中 BOSS 返回的 `credit_code`（统一社会信用代码）
+- 工作方式：复用 CDP 打开爱企查详情页 → 解析工商字段 → 结构化输出 → 入库 `company_insight`
+- 前置条件：step4 完成（详情已就绪，`credit_code` 已从 BOSS 详情中提取并存储）
 
 中断恢复：`decide()` 自动检测当前状态，`run()` 从断点继续。详见 [skill/pipeline.md](skill/pipeline.md)。
 
@@ -175,16 +185,42 @@ IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_JSON_SAVED → COMPLETE
 | `address` / `work_hours` / `work_type` | TEXT | 地址 / 工时 / 工作类型 |
 | `benefits_json` / `recruiters_json` / `executives_json` | TEXT | 福利 / 招聘者 / 高管 |
 
-#### company_insight（企查查洞察 — 预留）
+#### company_insight（企查查洞察 — CDP 自爬虫）
+
+通过 `scripts/company_insight/scraper.py` 抓取爱企查工商信息。参数 `credit_code` 来自 `company_list`（BOSS 返回的统一社会信用代码）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `brand_id` | TEXT UNIQUE | 公司唯一键 |
-| `credit_code` | TEXT | 统一社会信用代码 |
-| `legal_person` / `registered_capital` | TEXT | 法人 / 注册资本 |
-| `establish_date` / `business_scope` / `business_status` | TEXT | 成立日期 / 经营范围 / 状态 |
+| `credit_code` | TEXT | 统一社会信用代码（主键） |
+| `company_name` | TEXT | 公司全称 |
+| `legal_person` | TEXT | 法定代表人 |
+| `registered_capital` | TEXT | 注册资本 |
+| `establish_date` | TEXT | 成立日期 |
+| `business_status` | TEXT | 登记状态（开业/注销等） |
+| `company_type` | TEXT | 企业类型 |
+| `industry` | TEXT | 所属行业 |
+| `registered_address` | TEXT | 注册地址 |
+| `business_term` | TEXT | 营业期限 |
+| `registration_authority` | TEXT | 登记机关 |
+| `approval_date` | TEXT | 核准日期 |
+| `registration_number` | TEXT | 注册号 |
+| `org_code` | TEXT | 组织机构代码 |
+| `taxpayer_id` | TEXT | 纳税人识别号 |
+| `employee_count` | TEXT | 参保人数 |
+| `scale` | TEXT | 规模（大型/中型/小型/微型） |
+| `former_name` | TEXT | 曾用名 |
+| `phone` | TEXT | 联系电话 |
+| `email` | TEXT | 邮箱 |
+| `website` | TEXT | 网址 |
+| `tags_json` | TEXT | 标签（纳税人/资质/类型，JSON 数组） |
+| `products_json` | TEXT | 产品列表（JSON 数组） |
+| `top_info_json` | TEXT | 融资/阶段等扩展信息（JSON） |
+| `business_info_raw_json` | TEXT | 原始工商信息（调试用，JSON） |
+| `url` | TEXT | 爱企查页面 URL |
+| `scraped_at` | TEXT | 抓取时间 |
+| `has_insight` | INTEGER | 是否已爬（0=待爬 1=已爬） |
 
-**联立键**：`company_list.encrypt_brand_id` = `company_detail.brand_id`
+**联立键**：`company_list.credit_code` = `company_insight.credit_code`
 
 ### B2. 数据过期警告
 
@@ -280,6 +316,34 @@ new_jobs = conn.execute("""
 | `idx_cl_brand_id` | `encrypt_brand_id` | 按公司联立查询 |
 | `idx_cl_has_detail` | `has_detail` | 筛选待爬详情 |
 | `idx_cd_brand_id` | `brand_id` | 详情表主键查找 |
+| `idx_cl_has_insight` | `has_insight` | 筛选待爬洞察 |
+| `idx_ci_credit_code` | `credit_code` | 洞察表主键查找 |
+
+### B6. 联立查询示例（三表）
+
+```python
+# 案例 6: 职位 + 详情 + 洞察（三表联立）
+rows = conn.execute("""
+    SELECT cl.title, cl.salary,
+           cd.company_name, cd.stage, cd.scale,
+           ci.legal_person, ci.registered_capital, ci.industry
+    FROM company_list cl
+    LEFT JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+    LEFT JOIN company_insight ci ON cl.credit_code = ci.credit_code
+    WHERE cl.query_hash = ?
+    ORDER BY cl.salary DESC
+""", (query_hash,)).fetchall()
+
+# 案例 7: 洞察爬取进度
+stats = conn.execute("""
+    SELECT
+        COUNT(DISTINCT cl.credit_code) as total_companies,
+        SUM(cl.has_insight) as done_insight,
+        COUNT(DISTINCT cl.credit_code) - SUM(cl.has_insight) as pending_insight
+    FROM company_list cl
+    WHERE cl.credit_code != ''
+""").fetchone()
+```
 
 ---
 

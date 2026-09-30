@@ -17,8 +17,8 @@ Step 2: Detail 爬取 (扫描 DB has_detail=0)
        ↓
   从 JSON 读取 → 结构化导入 company_detail 表 → 更新 has_detail=1
 
-Step 3: Insight 爬取 (扫描 DB has_insight=0, 未来)
-  企查查 MCP → 结构化导入 company_insight 表 → 更新 has_insight=1
+Step 3: Insight 爬取 (扫描 DB has_insight=0)
+   CDP 自爬虫抓取爱企查 → 结构化导入 company_insight 表 → 更新 has_insight=1
 ```
 
 每步独立可中断恢复：JSON 先行落地，DB 导入可重试，不会重复爬取。

@@ -2836,6 +2836,7 @@ def _run_db_pipeline(args):
 
                 os.makedirs(COMPANY_DIR, exist_ok=True)
                 json_paths = []
+                detail_imported = 0
                 for brand in brands:
                     brand_id = brand["encrypt_brand_id"]
                     company_link = brand["company_link"]
@@ -2851,6 +2852,9 @@ def _run_db_pipeline(args):
                         json_paths.append((json_path, brand_id))
                         db.connect()
                         db.init_schema()
+                        db.import_detail_from_json(json_path, brand_id)
+                        db.mark_detail_done(brand_id)
+                        detail_imported += 1
                     except Exception as e:
                         print(f"  ❌ 失败: {e}")
                         db.connect()
@@ -2859,19 +2863,19 @@ def _run_db_pipeline(args):
             else:
                 json_paths = []
 
-            # 导入详情到 DB
-            detail_imported = 0
+            # 兜底导入残留 JSON（兼容旧数据/中断恢复）
+            fallback_imported = 0
             for json_path, brand_id in json_paths:
                 if not os.path.exists(json_path):
                     continue
                 db.import_detail_from_json(json_path, brand_id)
                 db.mark_detail_done(brand_id)
-                detail_imported += 1
-            print(f"导入详情: {detail_imported} 个公司")
+                fallback_imported += 1
+            print(f"导入详情: {detail_imported} (兜底+{fallback_imported}) 个公司")
 
         if step == "insight":
             # ── Step 3: 洞察（预留） ──
-            print(f"\n=== Step 3: 洞察（预留，待企查查 MCP 接入） ===")
+            print(f"\n=== Step 3: 洞察（CDP 自爬虫抓取爱企查） ===")
             brands = db.get_pending_insight_brands()
             print(f"待获取洞察: {len(brands)} 个公司（功能预留）")
 
