@@ -108,8 +108,25 @@ CREATE TABLE IF NOT EXISTS company_insight (
     establish_date  TEXT,
     business_scope  TEXT,
     business_status TEXT,
+    company_type    TEXT,
+    industry        TEXT,
+    registered_address TEXT,
+    business_term   TEXT,
+    registration_authority TEXT,
+    employee_count  TEXT,
+    scale           TEXT,
+    phone           TEXT,
+    email           TEXT,
+    website         TEXT,
+    description     TEXT,
+    former_name     TEXT,
+    tags_json       TEXT,
+    products_json   TEXT,
+    top_info_json   TEXT,
+    business_info_raw_json TEXT,
     cap_json        TEXT,
     risk_json       TEXT,
+    url             TEXT,
     create_time     TEXT NOT NULL,
     scraped_at      TEXT
 );
@@ -370,12 +387,15 @@ class JobDatabase:
     # ── Insight 查询/导入（预留） ─────────────────────────────────
 
     def get_pending_insight_brands(self):
-        """查询 has_insight=0 且 has_detail=1 的 brand 列表."""
+        """查询 has_insight=0 且 has_detail=1 的 brand 列表.
+
+        从 company_detail 关联 credit_code, 返回需要跑企查查洞察的公司.
+        """
         self.connect()
         cur = self.conn.cursor()
         cur.execute(
             """SELECT MIN(cl.id) as id, cl.encrypt_brand_id, MIN(cl.boss_name) as boss_name,
-                      cd.business_info_json, cd.company_name
+                      cd.business_info_json, cd.company_name, cd.credit_code
                FROM company_list cl
                JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
                WHERE cl.has_insight = 0 AND cl.has_detail = 1
@@ -385,7 +405,10 @@ class JobDatabase:
         return [dict(r) for r in cur.fetchall()]
 
     def import_insight_from_json(self, json_path, brand_id):
-        """读取企查查洞察 JSON → 写入 company_insight."""
+        """读取企查查洞察 JSON → 写入 company_insight.
+
+        支持 scraper.py 输出的全字段 (phone/email/website/description/tags/products 等).
+        """
         self.connect()
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -396,8 +419,12 @@ class JobDatabase:
             """INSERT OR REPLACE INTO company_insight (
                 brand_id, company_list_id, company_name, credit_code, legal_person,
                 registered_capital, establish_date, business_scope, business_status,
-                cap_json, risk_json, create_time, scraped_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                company_type, industry, registered_address, business_term,
+                registration_authority, employee_count, scale,
+                phone, email, website, description, former_name,
+                tags_json, products_json, top_info_json, business_info_raw_json,
+                cap_json, risk_json, url, create_time, scraped_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 brand_id,
                 None,
@@ -408,8 +435,25 @@ class JobDatabase:
                 data.get("establish_date", ""),
                 data.get("business_scope", ""),
                 data.get("business_status", ""),
+                data.get("company_type", ""),
+                data.get("industry", ""),
+                data.get("registered_address", ""),
+                data.get("business_term", ""),
+                data.get("registration_authority", ""),
+                data.get("employee_count", ""),
+                data.get("scale", ""),
+                data.get("phone", ""),
+                data.get("email", ""),
+                data.get("website", ""),
+                data.get("description", ""),
+                data.get("former_name", ""),
+                json.dumps(data.get("tags", []), ensure_ascii=False),
+                json.dumps(data.get("products", []), ensure_ascii=False),
+                json.dumps(data.get("top_info", {}), ensure_ascii=False),
+                json.dumps(data.get("business_info_raw", {}), ensure_ascii=False),
                 json.dumps(data.get("cap", {}), ensure_ascii=False),
                 json.dumps(data.get("risk", []), ensure_ascii=False),
+                data.get("url", ""),
                 now,
                 data.get("scraped_at", now),
             ),
@@ -502,6 +546,14 @@ class JobDatabase:
         )
         detail_pending = cur.fetchone()[0]
 
+        cur.execute(
+            """SELECT COUNT(DISTINCT cl.encrypt_brand_id) FROM company_list cl
+               JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+               WHERE cl.query_hash = ? AND cl.has_insight = 0""",
+            (query_hash,),
+        )
+        insight_pending = cur.fetchone()[0]
+
         return {
             "query_hash": query_hash,
             "job_count": row[0],
@@ -509,6 +561,7 @@ class JobDatabase:
             "oldest_create_time": row[2],
             "detail_done": detail_done,
             "detail_pending": detail_pending,
+            "insight_pending": insight_pending,
         }
 
     def get_all_query_hashes(self):

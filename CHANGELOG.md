@@ -1,15 +1,16 @@
 # Changelog
 
-## 未发布
+## v2.5.0 (未发布)
 
 ### 变更
+- 文档与代码一致性修正：消除 README.md、README.en.md、CHANGELOG.md 中文件路径、版本号、安装命令的不一致。修正包括：README.en.md 版本号 2.3.0→2.4.0；README 双语文件结构补 `company_list/db.py` / `pipeline.py` 和 `scripts/company_insight/`；测试路径 `tests/company_list/test_chrome_setup.py` → `tests/chrome_setup/test_chrome_setup.py`；安装方式 1/2 补 `db.py` / `pipeline.py` 复制/下载命令；验证安装补对应文件检查。规范文档见 `specs/task_doc_code_sync.md`
 - SKILL.md 双主线重构：将 SKILL.md 从线性结构重构为"决策入口 + 双主线"结构。新增「决策入口」顶层 section（`--check` 环境检查 + `PipelineState.decide()` 判断路径），两条平级主线：主线 A「数据构建」内联渐进式询问流程（筛选→意图→深度）+ 命令构造 + 管道推进，主线 B「数据查询」含三张表完整字段说明、数据过期警告（`BOSS_QUERY_FRESHNESS_HOURS=24h` 超期需回主线 A 重新抓取）、sqlite3 查询模板与常用案例。`skill/pipeline.md` 重写为纯技术参考（移除渐进式询问，只保留状态机图、决策表、中断恢复场景）。`SKILL.md` 安装说明改为一行链接到 `skill/install.md`，`platforms` 补充 `windows`。规范文档见 `specs/task_skill_dual_mainline.md`
 - extractor 反爬机制补全：`scripts/company_detail/extractor.py` 新增 `_human_scroll`（15% 概率回看滚动 + 阅读停顿）、`_human_mouse_jitter`（40% 概率鼠标移动）仿真人类浏览行为，`scrape_company_detail` 新增 `delay` 参数（默认 15s，实际间隔 10-20s 随机）控制公司间抓取节奏，对齐 `boss_cdp_raw.py` 详情链路防护等级，降低 `_security_check` 风控触发风险
 - 新增 `--url` CLI 参数：`boss_cdp_raw.py` 新增 `--url` 参数，用户给一条 BOSS 查询 URL 即可一键跑完整管线。系统自动解析 URL 中的 keyword/city/filters，通过 PipelineState 决策并推进到两张表就绪。URL 是语义最精确的查询方式，一条 URL 等价于 keyword + city + 所有筛选条件的组合。规范文档见 `specs/task_cli_url.md`
 - 新增 Pipeline 状态机与统一决策入口：`scripts/company_list/pipeline.py` 新增 `PipelineState` 类作为管线统一入口。用户给 URL → `decide()` 自动判断跳过/导入/爬取/刷新 → `run()` 按状态机推进到两张表就绪。状态流转：`IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_JSON_SAVED → COMPLETE`，支持从任意断点恢复。决策逻辑：DB 有数据且未过期（`BOSS_QUERY_FRESHNESS_HOURS`，默认 24h）→ 跳过；DB 有数据但过期 → 删旧重爬；无 DB 数据但有 JSON → 跳过爬取直接导入；什么都没有 → 从头爬取。`db.py` 新增 `get_query_info` / `get_all_query_hashes` / `delete_query` 三个查询方法支撑决策。`pipeline.py` 新增模块级便捷函数 `query()`（一键入口）和 `print_status()`（批次状态打印）。`SKILL.md` 新增管道工作流章节，含状态图、决策流程图、表关系 ER 图、联立键说明、Agent 快速参考清单、中断恢复场景表。规范文档见 `specs/task_pipeline_state_machine.md`
 - 新增 SQLite 三表桥接与分阶段管道：引入 `scripts/company_list/db.py`（`JobDatabase` 类）和 `scripts/company_list/pipeline.py`（分阶段编排），实现 `company_list`（主表，每行一个职位）/ `company_detail`（公司详情，按 brand_id 去重）/ `company_insight`（企查查洞察，预留）三表设计。管道分步执行：Step 1 列表爬取 → `data/query/{query_hash}.json` 落地 → 结构化导入 DB；Step 2 扫描 DB `has_detail=0` → 逐公司爬取详情 → `data/company/{brand_id}.json` 落地 → 导入 DB 并更新 `has_detail=1`；Step 3 预留 `has_insight=0` 触发企查查 MCP。每步先写 JSON 后导 DB，支持中断恢复和增量爬取。CLI 新增 `--db`、`--db-path`、`--step {list,detail,insight,all}`、`--list-json`、`--detail-json-dir` 参数。配套 `tests/company_list/test_db.py`（全 mock 单测）。规范文档见 `specs/task_sqlite_bridge_pipeline.md`
 - 新增公司详情提取模块 `scripts/company_detail/`：独立的 `extractor.py` 复用 `boss_cdp_raw.py` 的 `CDPSession` / `create_page_session` 导航 BOSS 公司页面（`/gongsi/{brand_id}.html`），通过 CDP 获取 `document.body.innerText` 后解析结构化公司信息，含基本信息（在招职位数、BOSS 数、公司名、融资阶段、规模、行业）、热招职位列表、公司简介、产品介绍、工商信息（15 个注册地址/法人/资本等字段）、地址、工作时间及福利、招聘人员、高管。提供 `scrape_company_detail(url, cdp_port)` 高级 API 与 `__main__` CLI 入口（`python -m scripts.company_detail.extractor <url>`），输出 JSON 至 `data/` 目录。提供多个可独立使用的纯文本解析函数（`parse_basic_info` / `parse_hot_jobs` / `parse_business_info` 等，无需 Chrome）。配套 `tests/company_detail/test_extractor.py`（纯解析单用例，不依赖真实 Chrome）
-- 测试目录重组：`tests/test_chrome_setup.py` → `tests/company_list/test_chrome_setup.py`（路径层级 `parents[1]` → `parents[2]`）；新增 `tests/company_detail/`、`tests/company_list/` 子包
+- 测试目录重组：`tests/test_chrome_setup.py` → `tests/chrome_setup/test_chrome_setup.py`（独立子包）；新增 `tests/company_detail/`、`tests/company_list/` 子包
 - `tests/test_job_summary.py` 删除（不再维护）
 - 单次最大页数 `MAX_PAGES` 由硬编码改为环境变量 `BOSS_MAX_PAGES` 可配置（默认 10），新增 `.env.example` 配置模板
 - 依赖新增 `beautifulsoup4>=4.15.0`（`pyproject.toml` 与 `uv.lock` 同步更新）
@@ -22,6 +23,7 @@
 - 删除死代码：`FETCH_API_JS_TEMPLATE`、`build_login_probe_url`、`parse_api_jobs_eval_value`、`should_use_dom_fallback`；`CDPSession` 新增事件缓冲与 `drain_events`；测试从 92 增至 96 个
 
 ### 新增
+- 企查查洞察爬虫接入 Pipeline 体系：`scripts/company_insight/scraper.py` 新增企查查抓取（通过 credit_code 搜索 → 详情页解析 → 结构化输出 JSON），`pipeline.py` 新增 `step5_scrape_insights()` + `run_insight_pipeline()` 独立入口，`PipelineState` 状态机扩展 `DETAIL_DONE` / `SCRAPE_INSIGHT` 决策分支，`db.py` 的 `company_insight` 表新增 18 列（phone/email/website/description/company_type/industry/registered_address/business_term/registration_authority/employee_count/scale/former_name/tags_json/products_json/top_info_json/business_info_raw_json/url）。`scraper.py` 顶层输出 22 个干净字段，新增 `phone`/`email`/`website`（从 `parse_contact_info` 接入），删除顶层 `description` 和 `business_scope`。`business_info_raw` 新增清理：`description` 在 `"... 展开"` 处截断，删除被股权结构污染的 `former_name`。`parse_top_tags` 增加 UI 排除列表，tags 只保留纳税人/企业类型标签。规范文档见 `specs/task_company_insight_integration.md`
 - 抓取结果跨轮对比，标记本次新增岗位（#88）：输出 JSON/CSV 中每条岗位新增 `is_new` 布尔字段（终端列表同步以 🆕 标记），表示「该岗位不在历史基准中」。基准自动选取规则：同关键词+同城市、**文件名日期早于本轮**的最近一份结果（同一天多轮抓取折叠为一轮，避免和几分钟前的自己 diff 出翻页抖动噪音）；找不到同关键词历史基准时全体视为新增并在终端明示；`--diff-base <path>` 可显式指定基准文件。纯本地后处理，零额外请求。（#50 反馈的「搜索结果重复」由此缓解）
 
 - macOS 的 `--setup-chrome` 新增 Chromium 自动探测：未安装 Google Chrome 但存在 `/Applications/Chromium.app` 时，自动启动 Chromium；`--copy-login-state` 也会使用与所选浏览器匹配的 profile 目录。（#46）
@@ -30,6 +32,7 @@
 - 城市码表外置为 `data/city_codes.json`（全量 300+ 城市，覆盖一二三四五线），新增 `--list-cities [关键词]` 命令查看支持的城市；`resolve_city` 查询链改为「本地静态码表 → 运行时拉 BOSS 接口 → 9 位裸码兜底」。城市码表打进 wheel，`pip install` 用户也可用。（#24）
 
 ### 修复
+- 详情爬取增量同步：`pipeline.py` 的 `step3_scrape_details` 和 `_step_scrape_details` 改为每爬完一个公司立即同步到 DB（`import_detail_from_json` + `mark_detail_done`），step4 降级为兜底导入。修复进程在 step3/step4 之间中断时数据丢失问题（此前已爬详情仅存于 JSON 文件，DB 未同步，重跑造成重复抓取）。`boss_cdp_raw.py` 的 `_run_db_pipeline` 详情循环同步修复。Bug 报告见 `docs/bug_reports/detail_scrape_incremental_sync.md`。规范文档见 `specs/task_pipeline_incremental_sync.md`
 - `--url` 管道模式忽略 `--no-detail` 标志：`_run_url_pipeline` 调用 `pipe.run()` 时未传递 `args.detail`，且 `pipe.run()` 无 `detail` 参数，导致用户显式传入 `--no-detail` 后仍触发详情抓取（step3-4）。修复：`PipelineState.run()` 新增 `detail=True` 参数，`detail=False` 时跳过 step3-4 并将状态标记为 COMPLETE；`_run_url_pipeline` 传入 `args.detail`。Bug 报告见 `docs/bug_reports/pipeline_url_no_detail_ignored.md`
 - `--setup-chrome` 登录等待遇 CDP 传输层超时不再裸崩（#78）：`TimeoutError` 是 `OSError` 子类而非 `RuntimeError` 子类，`wait_for_login` 探测循环原只捕 `RuntimeError`，事件洪流冲掉命令响应时整个命令带着 traceback 退出、已写好的瞬态重试（`LOGIN_PROBE_MAX_TRANSIENT_ERRORS`）无法运行。现收敛共享元组 `CDP_TRANSIENT_EXCEPTIONS`（`(TimeoutError, websocket.WebSocketException)`），`wait_for_login` 捕获后按瞬态错误计入重试计数，`scrape_list` 外层同步补齐；同时把 `capture.enable()` 移入 `scrape_list` 的 try 块（原先位于 try 外，任何异常都会裸崩且跳过 finally 清理）。`--check` / `--smoke-test` 行为不变（原本已正确）
 - Windows 兼容：`main()` 入口将 stdout/stderr 重配为 UTF-8，修复 Windows GBK 控制台遇到 emoji（✅❌⚠️ 等）输出直接 `UnicodeEncodeError` 崩溃的问题（实测此前 73 个单测中 8 个因此失败）
