@@ -68,6 +68,21 @@ CREATE TABLE IF NOT EXISTS company_detail (
     website         TEXT,
     products_json   TEXT,
     business_info_json TEXT,
+    business_name           TEXT,
+    legal_representative    TEXT,
+    established_date        TEXT,
+    company_type            TEXT,
+    business_status         TEXT,
+    registered_capital      TEXT,
+    registered_address      TEXT,
+    business_term           TEXT,
+    region                  TEXT,
+    credit_code             TEXT,
+    approval_date           TEXT,
+    former_name             TEXT,
+    registration_authority  TEXT,
+    business_industry       TEXT,
+    business_scope          TEXT,
     address         TEXT,
     work_hours      TEXT,
     work_type       TEXT,
@@ -267,6 +282,23 @@ class JobDatabase:
         scale = data.get("scale", "")
         industry = data.get("industry", "") or business_info.get("所属行业", "")
 
+        # 从 business_info 提取独立列
+        biz_name = business_info.get("企业名称", "")
+        biz_legal = business_info.get("法定代表人", "")
+        biz_est = business_info.get("成立时间", "")
+        biz_type = business_info.get("企业类型", "")
+        biz_status = business_info.get("经营状态", "")
+        biz_capital = business_info.get("注册资本", "")
+        biz_addr = business_info.get("注册地址", "")
+        biz_term = business_info.get("营业期限", "")
+        biz_region = business_info.get("所属地区", "")
+        biz_credit = business_info.get("统一社会信用代码", "")
+        biz_approval = business_info.get("核准日期", "")
+        biz_former = business_info.get("曾用名", "")
+        biz_reg_auth = business_info.get("登记机关", "")
+        biz_industry = business_info.get("所属行业", "")
+        biz_scope = business_info.get("经营范围", "")
+
         cur = self.conn.cursor()
         cur.execute(
             """INSERT OR REPLACE INTO company_detail (
@@ -274,8 +306,13 @@ class JobDatabase:
                 stage, scale, industry, hot_jobs_json, description, website,
                 products_json, business_info_json, address, work_hours, work_type,
                 benefits_json, recruiters_json, executives_json, office_addresses_json,
-                url, json_path, create_time, scraped_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                url, json_path, create_time, scraped_at,
+                business_name, legal_representative, established_date,
+                company_type, business_status, registered_capital,
+                registered_address, business_term, region,
+                credit_code, approval_date, former_name,
+                registration_authority, business_industry, business_scope
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 brand_id,
                 None,
@@ -301,6 +338,21 @@ class JobDatabase:
                 json_path,
                 now,
                 data.get("scraped_at", now),
+                biz_name,
+                biz_legal,
+                biz_est,
+                biz_type,
+                biz_status,
+                biz_capital,
+                biz_addr,
+                biz_term,
+                biz_region,
+                biz_credit,
+                biz_approval,
+                biz_former,
+                biz_reg_auth,
+                biz_industry,
+                biz_scope,
             ),
         )
         self.conn.commit()
