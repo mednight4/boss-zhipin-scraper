@@ -1,5 +1,13 @@
 # Task: business_info 字段拆分为 company_detail 独立列
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录字段拆分方案。现行实现中，`company_list` 没有 `credit_code` 列，列表阶段不会生成或写入信用代码；`company_detail.credit_code` 由公司详情 `business_info` 的“统一社会信用代码”填充，并作为爱企查搜索输入。
+>
+> 三表的项目内连接关系是 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id`。爱企查页面中的 `company_id/pageid` 只用于页面 URL 导航，不是项目数据库连接键。从空库开始的实际顺序是 `list → company_list → detail → company_detail.credit_code → insight → company_insight`，因此列表入库后不能把 detail 和 insight 描述为可直接并发。
+>
+> **历史记录标记**：下文的目标、步骤和风险保留当时的设计背景；与上述契约冲突的内容均是原方案（已过时），不能当作现行表结构或执行顺序。
+
 ## 现状问题
 
 `company_detail` 表的工商信息全部塞在 `business_info_json` 一列（JSON blob）。查询时必须解析 JSON、按中文 key 提取，无法直接 SQL 过滤/排序。

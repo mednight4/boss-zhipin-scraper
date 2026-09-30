@@ -1,5 +1,11 @@
 # Task: data/output 目录语义分离
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录输出目录迁移的历史方案。当前运行时输出使用 `output/query/`、`output/company/`、`output/insight/`，数据库默认路径为 `output/jobs.db`；`data/city_codes.json` 是静态只读数据。与当前三表契约相关的连接键是 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id`，`credit_code` 只在 `company_detail` 中作为爱企查搜索输入，不在 `company_list` 中。
+>
+> **历史记录标记**：下文“改前”路径属于历史背景；其中 `data/query`、`data/company` 和用户主目录数据库路径已被当前实现取代。
+
 ## 现状问题
 
 当前 `data/` 目录混合了两类文件：

@@ -1,5 +1,13 @@
 # Task: 详情爬取增量同步 — 逐公司写入 DB
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录详情增量同步与中断恢复的历史方案。列表表只有 `company_list.encrypt_brand_id`，没有 `credit_code`；详情 extractor 从 `business_info` 取统一社会信用代码，写入 `company_detail.credit_code`，供后续爱企查搜索。三表通过 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 连接。
+>
+> 从空库开始的依赖顺序仍是 `list → company_list → detail → company_detail.credit_code → insight → company_insight`，所以本文件的 detail 恢复设计不能被解读为允许 insight 与 detail 并发。洞察待处理还受 `INNER JOIN company_detail`、`cl.has_detail=1`、`cl.has_insight=0` 限制。
+>
+> **历史记录标记**：下文的中断窗口、代码片段和改动清单保留当时背景；与当前实现冲突的部分属于原方案（已过时）。
+
 ## 现状问题
 
 详情爬取（step3）采用「全部爬完再统一导入 DB」的模式：

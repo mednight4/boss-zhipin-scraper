@@ -21,30 +21,34 @@ This project is for **learning and technical research purposes only**. It is int
 
 ## 🚀 30-Second Quick Start
 
-```bash
-# 1. Clone + install deps
-git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
-cd boss-zhipin-scraper
-pip install -r requirements.txt          # or: uv sync
+```powershell
+# 1. Install dependencies
+uv sync
 
-# 2. Launch an isolated Chrome and log in (only once; session persists)
-python3 scripts/boss_cdp_raw.py --setup-chrome
-# Or explicitly use Microsoft Edge:
-# python3 scripts/boss_cdp_raw.py --setup-edge
+# 2. Launch an isolated Microsoft Edge and log in
+uv run python -m scripts.boss_cdp_raw --setup-edge --cdp-port 9222
 
-# 3. Scrape + analyze
-python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --analysis
+# 3. Check dependencies, CDP, and BOSS login state
+uv run python -m scripts.boss_cdp_raw --check --cdp-port 9222
 
-# Cities nationwide are supported (incl. tier-3/4/5), e.g.:
-python3 scripts/boss_cdp_raw.py --keyword "前端" --city 赣州 --pages 3
-# List supported cities: --list-cities [keyword]
-python3 scripts/boss_cdp_raw.py --list-cities 江
+# 4. Scrape and analyze
+uv run python -u -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pages 3 --analysis --cdp-port 9222
 
-# 4. Generate an aggregated summary + prompt after scraping (reads the latest result)
-python3 scripts/job_summary.py
+# 5. Generate an aggregated summary and prompt
+uv run python -m scripts.job_summary --top 15
 ```
 
-Right after scraping you get: salary ranges, experience requirements, top skill keywords, and a job-application optimization prompt. The prompt is based solely on the scraped job data — it never reads your local résumé file and never scores personal-job match.
+You can also use a BOSS query URL:
+
+```powershell
+uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --no-detail --cdp-port 9222
+```
+
+List supported cities with:
+
+```powershell
+uv run python -m scripts.boss_cdp_raw --list-cities 上海
+```
 
 ## ✨ Features
 
@@ -83,7 +87,10 @@ cd boss-zhipin-scraper
 # 2. Copy into the Hermes skills directory
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_insight
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/skill
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
+cp skill/*.md ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
@@ -100,9 +107,12 @@ cp data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 No need to clone the whole repo — download just the files you need:
 
 ```bash
-mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts && \
-curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md && \
+SKILL_DIR="$HOME/.hermes/skills/data-science/boss-zhipin-scraper"
+mkdir -p "$SKILL_DIR/scripts/company_detail" "$SKILL_DIR/scripts/company_list" "$SKILL_DIR/scripts/company_insight" "$SKILL_DIR/skill" && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md -o "$SKILL_DIR/SKILL.md" && \
+for file in agent_workflow.md install.md pipeline.md reference.md; do \
+  curl -sL "https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/skill/$file" -o "$SKILL_DIR/skill/$file"; \
+done && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/boss_cdp_raw.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
@@ -118,10 +128,14 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_list/db.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/db.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_list/pipeline.py \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/pipeline.py && \
-mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
+  -o "$SKILL_DIR/scripts/company_list/pipeline.py" && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_insight/__init__.py \
+  -o "$SKILL_DIR/scripts/company_insight/__init__.py" && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_insight/scraper.py \
+  -o "$SKILL_DIR/scripts/company_insight/scraper.py" && \
+mkdir -p "$SKILL_DIR/data" && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
+  -o "$SKILL_DIR/data/city_codes.json"
 ```
 
 ### Option 3: `hermes skills install` (requires direct GitHub access)
@@ -153,6 +167,10 @@ npx clawhub@latest install @eatmoreduck/boss-zhipin-scraper
 ```bash
 # Check that the files exist
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/agent_workflow.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/pipeline.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/reference.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/install.md
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py
@@ -176,22 +194,22 @@ cd boss-zhipin-scraper
 pip install -r requirements.txt
 
 # 2. Start Chrome CDP (or use --setup-edge)
-python3 scripts/boss_cdp_raw.py --setup-chrome
+uv run python -m scripts.boss_cdp_raw --setup-chrome
 # macOS automatically selects an installed Google Chrome or /Applications/Chromium.app
 # First run won't copy your main Chrome session; log in to zhipin.com in the dedicated BOSS browser that pops up
 # setup waits for login to finish and confirms the API returns plaintext salaries
 
 # 3. Check the environment
-python3 scripts/boss_cdp_raw.py --check
+uv run python -m scripts.boss_cdp_raw --check
 
 # Optional: real browser/API smoke test (writes no result files)
-python3 scripts/boss_cdp_raw.py --smoke-test
+uv run python -m scripts.boss_cdp_raw --smoke-test
 
 # 4. Scrape
-python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --format csv --analysis
+uv run python -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pages 3 --format csv --analysis
 
 # 5. Summary + prompt after scraping
-python3 scripts/job_summary.py --top 15
+uv run python -m scripts.job_summary --top 15
 ```
 
 ## Parameters
@@ -232,16 +250,16 @@ python3 scripts/job_summary.py --top 15
 
 ```bash
 # Read the newest boss_jobs_*.json under the default result dir and auto-match the same-timestamp or newest detail file
-python3 scripts/job_summary.py
+uv run python -m scripts.job_summary
 
 # Specify list and detail files
-python3 scripts/job_summary.py \
+uv run python -m scripts.job_summary \
   --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260625_1200.json \
   --details ~/.boss-zhipin-scraper/job-result/boss_details_20260625_1200.json \
   --top 15
 
 # Only emit the prompt
-python3 scripts/job_summary.py --prompt-only
+uv run python -m scripts.job_summary --prompt-only
 ```
 
 After installing the package you can also use the entry command:
@@ -256,42 +274,28 @@ The summary covers: salary ranges, experience requirements, degree requirements,
 
 ```
 boss-zhipin-scraper/
-├── SKILL.md              # Hermes Skill definition
-├── README.md             # Chinese docs
-├── README.en.md          # English docs
+├── SKILL.md              # Agent bootstrap protocol
+├── AGENTS.md             # Repository development rules
+├── README.md             # Chinese user documentation
+├── README.en.md          # English user documentation
+├── skill/
+│   ├── agent_workflow.md  # Agent checks and execution states
+│   ├── install.md         # Installation and distribution
+│   ├── reference.md       # Parameters and output reference
+│   └── pipeline.md        # Pipeline and database contract
 ├── CHANGELOG.md
 ├── LICENSE
 ├── pyproject.toml
-├── .env.example          # Env config template (BOSS_MAX_PAGES, etc.)
+├── .env.example
 ├── data/
-│   └── city_codes.json   # Full city-code map
+│   └── city_codes.json
 ├── scripts/
-│   ├── boss_cdp_raw.py   # Main scraping script (list + detail)
-│   ├── job_summary.py    # Post-scrape summary + prompt
-│   ├── company_detail/   # Company detail extraction module
-│   │   ├── __init__.py
-│   │   └── extractor.py  # Company page parser (basic info / hot jobs / business reg. etc.)
-│   ├── company_list/     # SQLite DAL + staged pipeline
-│   │   ├── __init__.py
-│   │   ├── db.py
-│   │   └── pipeline.py
-│   └── company_insight/  # Aiqicha insight sub-package
-│       ├── __init__.py
-│       └── scraper.py    # Aiqicha business-info scraper (CDP self-crawler)
+│   ├── boss_cdp_raw.py
+│   ├── job_summary.py
+│   ├── company_detail/
+│   ├── company_list/
+│   └── company_insight/
 └── tests/
-    ├── chrome_setup/     # City code regression + CAPTCHA detection tests
-    │   ├── __init__.py
-    │   └── test_chrome_setup.py
-    ├── company_detail/   # Company detail tests
-    │   ├── __init__.py
-    │   └── test_extractor.py
-    ├── company_insight/  # Insight scraper tests (CAPTCHA / naming / import)
-    │   ├── __init__.py
-    │   └── test_scraper.py
-    └── company_list/     # JobDatabase + pipeline status tests
-        ├── test_db.py
-        └── test_pipeline.py
-```
 
 ## Company Detail Extraction
 
@@ -299,10 +303,10 @@ boss-zhipin-scraper/
 
 ```bash
 # CLI usage
-python -m scripts.company_detail.extractor <company_url>
+uv run python -m scripts.company_detail.extractor <company_url>
 
 # Example
-python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
+uv run python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
 ```
 
 Extracted fields include: basic info (job count, BOSS count, company name, funding stage, scale, industry), hot job list (salary/title/experience/degree/location/status), company description, website, products, business registration info (15 fields including legal representative, registered capital, address, etc.), work hours & benefits, recruiters, executives.
@@ -322,34 +326,57 @@ jobs = parse_hot_jobs(page_text)
 
 ## Pipeline CLI and Status Inspection
 
-The staged pipeline (list → details → Qichacha insight) has standalone CLI entry points. **You never need to write your own script to touch the database:**
+The pipeline follows the actual data dependency:
 
-```bash
-# See where the pipeline currently stands (recommended first entry point)
-python3 -m scripts.company_list.pipeline --step status
-
-# Scrape details in bulk (long task — add -u so progress streams live)
-python3 -u -m scripts.company_list.pipeline --step detail
-
-# Scrape Aiqicha insights in bulk
-python3 -u -m scripts.company_list.pipeline --step insight
-
-# Look up a single company's registration info (imported into the DB automatically)
-python3 -m scripts.company_insight.scraper 91310104MA1FR5RY3N
+```text
+list → company_list → BOSS company detail → company_detail.credit_code → Aiqicha insight → company_insight
 ```
 
-`--step status` prints six sections answering "which companies were scraped / is there data / when was it scraped / does it need re-scraping":
+`credit_code` is the unified social credit code used as the Aiqicha search input. It is not the BOSS `brand_id` and not the Aiqicha internal `company_id/pageid`.
+
+The project tables use this connection key:
+
+```text
+company_list.encrypt_brand_id = company_detail.brand_id
+company_list.encrypt_brand_id = company_insight.brand_id
+```
+
+View the current status:
+
+```powershell
+uv run python -m scripts.company_list.pipeline --step status --db-path output/jobs.db
+```
+
+Scrape BOSS company details:
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step detail --port 9222 --db-path output/jobs.db
+```
+
+After the detail stage produces `company_detail.credit_code`, scrape Aiqicha insights:
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step insight --port 9222 --insight-delay 15 --db-path output/jobs.db
+```
+
+Look up one company:
+
+```powershell
+uv run python -u -m scripts.company_insight.scraper 91310104MA1FR5RY3N --port 9222 --delay 15
+```
+
+`--step status` prints six sections answering which companies were scraped, whether data exists, when it was imported, and what remains:
 
 | Section | Contents |
 |---------|----------|
-| `[1] Query batches` | Which searches ran: keyword/city/job count/earliest insert time |
-| `[2] Overall progress` | Job count, unique company count, done/pending counts for details and insights |
-| `[3] Pending details` | brand_ids with `has_detail=0` |
-| `[4] Pending insights` | Companies with `has_insight=0` plus their `credit_code`; those missing a `credit_code` are listed separately with the reason |
-| `[5] Insight JSON reconciliation` | Canonical / orphan / legacy-named / unparsable / duplicate `credit_code`, with actual file names |
-| `[6] Recently imported insights` | Insert time of the latest 5 companies, for judging data freshness |
+| `[1] Query batches` | Search batches, keyword/city/job count/earliest insert time |
+| `[2] Overall progress` | Job count, unique companies, done/pending detail and insight counts |
+| `[3] Pending details` | Companies with `has_detail=0` |
+| `[4] Pending insights` | Insight tasks with an available `credit_code`; a list batch without company details does not yet provide an insight input |
+| `[5] Insight JSON reconciliation` | Canonical / orphan / legacy-named / unparsable / duplicate `credit_code` files |
+| `[6] Recently imported insights` | The latest five insight imports |
 
-Insight JSON is always written to `output/insight/aqc_{credit_code}.json`; the CLI and the pipeline share that naming.
+Insight JSON is written to `output/insight/aqc_{credit_code}.json`. The detailed Agent routing and checks are documented in [`skill/agent_workflow.md`](skill/agent_workflow.md).
 
 ### When a CAPTCHA / risk-control page appears
 
@@ -398,7 +425,7 @@ The interactive login page opened by `--setup-chrome` is the only temporary page
 If you really need to import the BOSS session from your main Chrome, run explicitly:
 
 ```bash
-python3 scripts/boss_cdp_raw.py --setup-chrome --copy-login-state
+uv run python -m scripts.boss_cdp_raw --setup-chrome --copy-login-state
 ```
 
 `--copy-login-state` overwrites the corresponding cookie-related files inside the isolated profile on every run; do not pass this for daily launches. It only copies `Local State` and `Default/Cookies*`, `Default/Network/Cookies*`-style cookie database files — not password stores, history, extensions, or a full profile.
@@ -408,7 +435,7 @@ On macOS, the import source matches the browser selected automatically: Google C
 To wipe the dedicated browser's login state:
 
 ```bash
-python3 scripts/boss_cdp_raw.py --setup-chrome --reset-chrome-profile
+uv run python -m scripts.boss_cdp_raw --setup-chrome --reset-chrome-profile
 ```
 
 ### Tearing down when you're done
@@ -416,7 +443,7 @@ python3 scripts/boss_cdp_raw.py --setup-chrome --reset-chrome-profile
 After a scrape/analysis finishes, the dedicated Chrome is **not** closed automatically (the login state is kept by default so you can run the next scrape right away). When you're sure you no longer need it, tear it down manually:
 
 ```bash
-python3 scripts/boss_cdp_raw.py --stop-chrome
+uv run python -m scripts.boss_cdp_raw --stop-chrome
 ```
 
 `--stop-chrome`/`--stop-edge` only close Chrome or Edge process(es) that belong to the scraper's isolated profile (`--user-data-dir`). They **never** kill by port or process name, so they cannot accidentally take down your main Chrome, Edge, Gmail, GitHub, or other signed-in sessions.
@@ -424,7 +451,7 @@ python3 scripts/boss_cdp_raw.py --stop-chrome
 If you'd rather have a particular scrape close the dedicated Chrome once it finishes normally, add `--close-chrome`:
 
 ```bash
-python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --close-chrome
+uv run python -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pages 3 --close-chrome
 ```
 
 `--close-chrome` is off by default, and it only fires on the **success path** of a completed scrape — login failures, crashes, and other early exits leave the Chrome running so the login state is preserved.

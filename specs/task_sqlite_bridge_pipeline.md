@@ -1,5 +1,15 @@
 # Task: SQLite 三表桥接与分阶段管道
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录 SQLite 桥接与分阶段管道的历史方案。现行实现中，`company_list` 没有 `credit_code` 列；列表只产生 `company_list.encrypt_brand_id`。详情 extractor 从 `business_info` 取统一社会信用代码并写入 `company_detail.credit_code`，爱企查以该字段搜索；爱企查 `company_id/pageid` 只用于页面 URL 导航。
+>
+> 三表通过 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 连接。从空库启动必须按 `list → company_list → detail → company_detail.credit_code → insight → company_insight` 推进，不能把 detail 与 insight 描述为列表入库后的直接并发。当前洞察待处理查询是 `company_list INNER JOIN company_detail`，并要求 `cl.has_detail=1`、`cl.has_insight=0`。
+>
+> 当前输出目录是 `output/query/`、`output/company/`、`output/insight/`，数据库默认是 `output/jobs.db`；本文件中出现的 `data/` 和用户目录路径属于历史方案。当前 `--step all` 总是报错，不能作为可执行恢复命令。
+>
+> **历史记录标记**：下文的表结构、步骤和命令保留原始设计背景；与上述契约冲突的内容属于原方案（已过时），不能作为现行接口说明。
+
 ## 目标
 
 引入 SQLite 数据库作为列表抓取与公司详情抓取之间的桥接层，实现三表设计（company_list / company_detail / company_insight），支持增量爬取和 AI Agent 查询。

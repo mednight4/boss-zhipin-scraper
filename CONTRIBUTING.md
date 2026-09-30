@@ -13,14 +13,12 @@
 
 ## 开发环境
 
-```bash
-git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
-cd boss-zhipin-scraper
-pip install -r requirements.txt          # 或 uv sync
-python3 -m unittest tests.test_chrome_setup   # 跑测试，确保全绿
+```powershell
+uv sync
+uv run python -m unittest tests.chrome_setup.test_chrome_setup
 ```
 
-要求 Python 3.10+，依赖只有 `requests` 和 `websocket-client`。
+要求 Python 3.10+，依赖通过项目的 `uv.lock` 管理。
 
 ## 代码规范
 
@@ -31,11 +29,12 @@ python3 -m unittest tests.test_chrome_setup   # 跑测试，确保全绿
 
 ## 测试要求
 
-- 修了 Bug 或加功能，**必须补测试**。测试在 `tests/test_chrome_setup.py`，用标准库 `unittest`，通过 mock 掉 `requests`/`websocket`，**不需要真实 Chrome 或网络**。
+- 修了 Bug 或加功能，**必须补测试**。测试使用标准库 `unittest`，通过 mock 掉 `requests`/`websocket`，**不需要真实 Chrome 或网络**。
+- Agent 执行协议见 [`skill/agent_workflow.md`](skill/agent_workflow.md)；用户使用说明见 README。历史 spec 中的方案描述必须以当前实现契约为准。
 - 提 PR 前本地先跑通：
 
-  ```bash
-  python3 -m unittest tests.test_chrome_setup
+  ```powershell
+  uv run python -m unittest tests.chrome_setup.test_chrome_setup
   ```
 
 - 涉及版本号改动，会触发 `VersionConsistencyTests`，确保 `scripts/boss_cdp_raw.py`、`pyproject.toml`、`SKILL.md`、`README.md` 四处版本一致。

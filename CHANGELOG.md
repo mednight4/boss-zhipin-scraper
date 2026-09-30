@@ -3,6 +3,7 @@
 ## v2.5.0 (未发布)
 
 ### 变更
+- Agent 文档契约全面纠错：明确 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 是项目三表连接键，`credit_code` 仅是爱企查搜索输入，爱企查 `company_id/pageid` 仅用于页面导航；删除“列表入库后 detail/insight 可直接并行”和“company_list 已有 credit_code”等错误指导。新增 `skill/agent_workflow.md` 作为渐进式 Agent 检查工具和状态执行入口，`SKILL.md` 收敛为最小启动协议，README 双语、AGENTS、Pipeline 参考和历史规范同步当前实现契约；保留 `job_summary.py` 和“提示词”用户功能说明。
 - 文档与代码一致性修正：消除 README.md、README.en.md、CHANGELOG.md 中文件路径、版本号、安装命令的不一致。修正包括：README.en.md 版本号 2.3.0→2.4.0；README 双语文件结构补 `company_list/db.py` / `pipeline.py` 和 `scripts/company_insight/`；测试路径 `tests/company_list/test_chrome_setup.py` → `tests/chrome_setup/test_chrome_setup.py`；安装方式 1/2 补 `db.py` / `pipeline.py` 复制/下载命令；验证安装补对应文件检查。规范文档见 `specs/task_doc_code_sync.md`
 - SKILL.md 双主线重构：将 SKILL.md 从线性结构重构为"决策入口 + 双主线"结构。新增「决策入口」顶层 section（`--check` 环境检查 + `PipelineState.decide()` 判断路径），两条平级主线：主线 A「数据构建」内联渐进式询问流程（筛选→意图→深度）+ 命令构造 + 管道推进，主线 B「数据查询」含三张表完整字段说明、数据过期警告（`BOSS_QUERY_FRESHNESS_HOURS=24h` 超期需回主线 A 重新抓取）、sqlite3 查询模板与常用案例。`skill/pipeline.md` 重写为纯技术参考（移除渐进式询问，只保留状态机图、决策表、中断恢复场景）。`SKILL.md` 安装说明改为一行链接到 `skill/install.md`，`platforms` 补充 `windows`。规范文档见 `specs/task_skill_dual_mainline.md`
 - extractor 反爬机制补全：`scripts/company_detail/extractor.py` 新增 `_human_scroll`（15% 概率回看滚动 + 阅读停顿）、`_human_mouse_jitter`（40% 概率鼠标移动）仿真人类浏览行为，`scrape_company_detail` 新增 `delay` 参数（默认 15s，实际间隔 10-20s 随机）控制公司间抓取节奏，对齐 `boss_cdp_raw.py` 详情链路防护等级，降低 `_security_check` 风控触发风险

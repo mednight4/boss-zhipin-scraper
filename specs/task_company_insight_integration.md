@@ -1,5 +1,13 @@
 # Task: 企查查洞察爬虫接入 Pipeline 体系
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录爱企查洞察接入的历史方案。`company_list` 没有 `credit_code` 列；BOSS 公司详情 extractor 从 `business_info` 取统一社会信用代码并写入 `company_detail.credit_code`，爱企查按该字段搜索。爱企查页面中的 `company_id/pageid` 只用于 URL 导航，不是项目表连接键。
+>
+> 项目三表的连接键是 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id`。空库实际顺序为 `list → company_list → detail → company_detail.credit_code → insight → company_insight`，所以洞察依赖详情，列表入库后不能直接并发 detail 与 insight。所谓独立洞察入口只适用于详情已就绪且 `credit_code` 可用的记录；`get_pending_insight_brands()` 还要求 `cl.has_detail=1`、`cl.has_insight=0` 并能 `INNER JOIN company_detail`。
+>
+> **历史记录标记**：下文的目标、字段设计和接入步骤保留当时背景；与本契约冲突的内容属于原方案（已过时）。
+
 ## 现状问题
 
 `scripts/company_insight/scraper.py` 是独立的企查查抓取脚本，通过 credit_code 搜索爱企查、抓取详情页并输出 JSON，但未接入 pipeline 体系：
@@ -96,15 +104,15 @@ JSON 扩展：`tags_json`, `products_json`, `top_info_json`, `business_info_raw_
 
 #### 方法更新
 
-- `get_pending_insight_brands()` → 返回 `(credit_code,)` 而非 `brand_id`
-- `import_insight_from_json()` → 适配全字段写入
-- `get_query_info()` → 返回字典新增 `insight_pending` 计数
+- `company_list` 不提供 `credit_code`；必须先通过 BOSS 公司详情得到 `company_detail.credit_code`。
+- `get_pending_insight_brands()` 返回可执行的公司记录，其中 `brand_id` 来自 `company_list.encrypt_brand_id`，`credit_code` 来自 `company_detail`。
+- 洞察结果的连接使用 `company_insight.brand_id = company_list.encrypt_brand_id`；`credit_code` 不是结果表连接键。
 
 ### 修改 3：`scripts/company_list/pipeline.py` — 管道扩展
 
 #### 新增 step5_scrape_insights()
 
-从 `company_list` 抽出 `credit_code` → 循环调用 `scrape_aqc_by_credit_code()` → 保存 JSON → 调 `import_insight_from_json()` 入库。
+从 `company_detail` 取得 `credit_code` → 循环调用 `scrape_aqc_by_credit_code()` → 保存 JSON → 使用对应 `brand_id` 调 `import_insight_from_json()` 入库。
 
 #### 新增 run_insight_pipeline()
 

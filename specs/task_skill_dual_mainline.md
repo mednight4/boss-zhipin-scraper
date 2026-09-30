@@ -1,5 +1,13 @@
 # Task: SKILL.md 双主线重构
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录 Skill 双主线重构的历史计划。`company_list` 没有 `credit_code` 列；详情 extractor 从 `business_info` 取统一社会信用代码并写入 `company_detail.credit_code`，爱企查以此搜索，`company_id/pageid` 仅用于页面导航。三表连接键是 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id`，空库顺序为 `list → company_list → detail → company_detail.credit_code → insight → company_insight`，不能把 detail 和 insight 写成列表入库后的直接并发。
+>
+> 当前 `--step all` 总是报错；`PipelineState.decide()` 可能在 `detail_pending>0` 时返回 `SKIP`，`LIST_JSON_SAVED` 下的 `run()` 会再次抓列表，且 URL 入口不注入 `scrape_insight_fn`。这些恢复和入口限制必须在现行说明中显式保留。
+>
+> **历史记录标记**：下文的结构图、命令和验收标准保留原始重构背景；与当前契约冲突的内容属于原方案（已过时）。
+
 ## 现状问题
 
 当前 SKILL.md（`bef6752` 版本）是线性结构：前置条件 → 脚本位置 → 依赖安装 → 自动化流程 → Pipeline → 常见问题。

@@ -1,5 +1,13 @@
 # Task: Pipeline 渐进式询问流程
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录渐进式询问的历史设计。`company_list` 没有 `credit_code` 列；统一社会信用代码由详情 extractor 写入 `company_detail.credit_code`，爱企查用它搜索，`company_id/pageid` 仅用于爱企查页面导航。项目三表通过 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 关联。
+>
+> 从空库开始必须是 `list → company_list → detail → company_detail.credit_code → insight → company_insight`。因此“列表+洞察”不能作为从空库直接执行的独立组合；只有详情已经成功入库并产生可用 `credit_code` 后，洞察才具备输入。洞察待处理还要求 `cl.has_detail=1`、`cl.has_insight=0` 且能 `INNER JOIN company_detail`。
+>
+> **历史记录标记**：下文的流程图、深度选项和时间估算保留原始背景；其中把 detail 与 insight 描述为无耦合或可任意组合的文字属于原方案（已过时）。
+
 ## 现状问题
 
 当前 SKILL.md Pipeline 章节描述的工作流是：用户给 URL → PipelineState 决策 → 自动跑完整管道。

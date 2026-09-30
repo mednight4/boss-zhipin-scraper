@@ -1,5 +1,13 @@
 # Task: Pipeline 洞察环节完善 — step5/step6 真正接入第三张表
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录 step5/step6 接入时的历史方案。现行数据契约是：`company_list` 没有 `credit_code` 列；详情 extractor 从 `business_info` 取得统一社会信用代码，写入 `company_detail.credit_code`，爱企查据此搜索。爱企查 `company_id/pageid` 只负责页面导航。
+>
+> 三表通过 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 连接。空库必须按 `list → company_list → detail → company_detail.credit_code → insight → company_insight` 推进，列表入库后不能直接并发 detail 与 insight。`get_pending_insight_brands()` 通过 `company_detail` 做 `INNER JOIN`，并要求 `cl.has_detail=1`、`cl.has_insight=0`。
+>
+> **历史记录标记**：下文的目标、代码片段和验证项保留原方案背景；与本契约冲突的内容属于原方案（已过时）。URL 入口也不能据此推断会自动注入 `scrape_insight_fn`。
+
 ## 现状问题
 
 `e54af2c` 提交了 `step5_scrape_insights()` 函数和 `company_insight` 表设计，但存在以下缺口：

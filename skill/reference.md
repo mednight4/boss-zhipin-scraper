@@ -1,107 +1,153 @@
-# 参数速查与输出格式
+# 参数与输出参考
 
-## 参数速查
+> Agent 的执行顺序和检查工具见 [`agent_workflow.md`](agent_workflow.md)。本文件只描述参数、输出和只读数据关系。
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--keyword` | - | 搜索关键词 |
-| `--city` | 上海 | 城市名（中文）或 9 位代码；没传时默认上海，无法识别的城市名会报错退出 |
-| `--pages` | 3 | 抓取页数（上限 10，每页 30 条） |
-| `--output` | ~/.boss-zhipin-scraper/job-result/... | 列表输出路径 |
-| `--detail-output` | ~/.boss-zhipin-scraper/job-result/... | 详情输出路径 |
-| `--format` | json | 输出格式: json / csv；csv 同时导出列表和详情 CSV |
-| `--detail` | 开启（默认） | 抓取详情页 JD |
-| `--no-detail` | - | 不抓取详情页（关闭默认行为） |
-| `--max-details` | 全部 | 详情页数量上限 |
-| `--analysis` | 关闭 | 输出分析报告 |
-| `--allow-dom-fallback` | 关闭 | API 无数据时允许降级 DOM 提取；默认关闭，薪资可能不可信 |
-| `--merge FILE` | - | 合并已有 JSON（按 job_id 去重） |
-| `--cdp-port` | 9222 | CDP 端口 |
-| `--setup-chrome` | 关闭 | 一键启动 Chrome CDP（持久隔离 profile） |
-| `--setup-edge` | 关闭 | 一键启动 Microsoft Edge CDP（与 `--setup-chrome` 共用隔离 profile） |
-| `--browser` | chrome | 搭配 `--setup-chrome` 选择浏览器（chrome/edge）；与 `--setup-edge` 显式冲突时以 `--setup-edge` 为准并提示 |
-| `--copy-login-state` | 关闭 | 手动导入主浏览器（`--setup-chrome` 取主 Chrome、`--setup-edge` 取主 Edge）的 Local State + Cookie 相关文件到隔离 profile；默认、首次启动、重复启动都不复制 |
-| `--reset-chrome-profile` | 关闭 | 重建 BOSS 专用 profile，会清除此专用浏览器登录态 |
-| `--no-wait-login` | 关闭 | `--setup-chrome` 启动后不等待 BOSS 登录完成 |
-| `--login-timeout` | 300 | `--setup-chrome` 等待登录完成的秒数 |
-| `--stop-chrome` | 关闭 | 关闭 BOSS 专用 CDP Chrome（按隔离 profile 精准匹配，不碰主 Chrome） |
-| `--stop-edge` | 关闭 | 关闭 BOSS 专用浏览器 CDP（与 `--stop-chrome` 共用隔离 profile） |
-| `--close-chrome` | 关闭 | 抓取正常结束后自动关闭专用 Chrome（默认不关；异常退出不触发，保留登录态） |
-| `--check` | 关闭 | 环境检查 |
-| `--smoke-test` | 关闭 | 真实 Chrome/CDP 搜索 API smoke test，不写结果文件 |
-| `--version` | - | 查看版本号 |
-| `--db` | 关闭 | 启用 SQLite 三表桥接管道（company_list / company_detail） |
-| `--db-path` | output/jobs.db | SQLite 数据库路径 |
-| `--step` | all | 执行哪一步: list / detail / insight / all |
-| `--list-json` | - | 从已有 JSON 导入列表（跳过列表抓取） |
-| `--detail-json-dir` | - | 从已有 JSON 目录导入详情（跳过详情抓取） |
-| `--url` | - | 给 URL 跑完整管道（自动解析 keyword + city + 筛选条件） |
+## CLI 入口
 
-### 筛选参数
+项目统一使用：
 
-| 参数 | 值 |
-|------|-----|
-| `--scale` | 301=0-20人 302=20-99 303=100-499 304=500-999 305=1000-9999 306=10000+ |
-| `--salary` | 402=3K以下 403=3-5K 404=5-10K 405=10-20K 406=20-50K 407=50K+ |
-| `--experience` | 108=在校生 102=应届生 101=经验不限 103=1年内 104=1-3年 105=3-5年 106=5-10年 107=10年+ |
-| `--degree` | 209=初中及以下 208=中专/中技 206=高中 202=大专 203=本科 204=硕士 205=博士 |
-
-### 城市代码
-
-全国 100010000 | 北京 101010100 | 上海 101020100 | 广州 101280100 | 深圳 101280600 | 杭州 101210100 | 成都 101270100 | 武汉 101200100 | 南京 101190100 | 厦门 101230200
-
-## 输出格式
-
-### JSON
-
-```json
-{
-  "keyword": "AI Agent",
-  "city": "上海",
-  "total": 60,
-  "jobs": [
-    {
-      "job_id": "c4420e8bce3a6e25",
-      "title": "AI Agent工程师",
-      "salary": "30-60K·15薪",
-      "location": "上海·闵行区·虹桥",
-      "tags": "5-10年 | 本科",
-      "boss_name": "SHEIN",
-      "boss_title": "招聘者",
-      "company_scale": "10000人以上",
-      "company_stage": "D轮及以上",
-      "company_industry": "电子商务",
-      "skills": "Java | Spring | AI",
-      "job_link": "https://www.zhipin.com/job_detail/xxx.html",
-      "company_link": "https://www.zhipin.com/gongsi/xxx.html",
-      "welfare": "节日福利 | 零食下午茶 | 定期体检"
-    }
-  ]
-}
+```text
+uv run python -m scripts.boss_cdp_raw ...
+uv run python -m scripts.company_list.pipeline ...
+uv run python -m scripts.company_insight.scraper ...
 ```
 
-### CSV
+长任务加 `-u`。
 
-`--format csv` 时自动在同目录生成 `.csv` 文件：列表 CSV 跟随 `--output`，详情 CSV 跟随 `--detail-output` 或默认详情 JSON 路径。CSV 使用 UTF-8 BOM 编码，Excel 直接打开无乱码。
+## 核心参数
 
-## 工作原理
+| 参数 | 说明 |
+|---|---|
+| `--keyword` | BOSS 搜索关键词 |
+| `--city` | 中文城市名或 9 位 city_code |
+| `--pages` | 列表抓取页数，受 `BOSS_MAX_PAGES` 限制 |
+| `--format` | `json` 或 `csv` |
+| `--detail` | 抓取职位详情，默认开启 |
+| `--no-detail` | 不抓取职位详情 |
+| `--max-details` | 职位详情数量上限 |
+| `--analysis` | 输出职位分析 |
+| `--cdp-port` | CDP 端口，默认 `9222` |
+| `--url` | 使用 BOSS 查询 URL 自动解析 keyword、city 和筛选条件 |
+| `--db` | 启用 SQLite 管道 |
+| `--db-path` | 数据库路径，默认 `output/jobs.db` |
+| `--step` | `list`、`detail`、`insight`、`all` 或 `status` |
+| `--list-json` | 从现有列表 JSON 导入 |
+| `--detail-json-dir` | 从现有详情 JSON 目录导入 |
+| `--insight-delay` | 洞察抓取间隔基准秒数 |
+| `--check` | 检查依赖、CDP 和 BOSS 登录态 |
+| `--smoke-test` | 验证真实 BOSS 搜索响应，不写结果文件 |
+| `--setup-edge` | 启动 Edge CDP 隔离 profile |
+| `--setup-chrome` | 启动 Chrome CDP 隔离 profile |
+| `--no-wait-login` | 启动浏览器后不等待登录 |
+| `--stop-edge` | 关闭 Edge 隔离 profile |
+| `--stop-chrome` | 关闭 Chrome 隔离 profile |
 
-1. 通过 Chrome DevTools Protocol (CDP) 连接到已打开的 Chrome 浏览器
-2. 在 BOSS直聘页面内注入 JS，用同步 XHR 调用 `/wapi/zpgeek/search/joblist.json` API
-3. API 返回明文 `salaryDesc`（如 `30-60K·15薪`），绕过前端字体反爬
-4. 列表 API 保留 `securityId` / `lid` 等上下文，进入详情页时带上这些参数
-5. 默认禁用 DOM fallback，避免把字体反爬后的薪资写入结果；只有显式 `--allow-dom-fallback` 才降级
-6. 每页 30 条，每页抓完立即写入文件，异常退出不丢数据
-7. 按 `job_id`（job_link 的 MD5 哈希前 16 位）去重
+## 筛选代码
 
-## 数据安全策略
+| 参数 | 代码示例 |
+|---|---|
+| `--scale` | `301` 0-20人，`302` 20-99人，`303` 100-499人，`304` 500-999人，`305` 1000-9999人，`306` 10000人以上 |
+| `--salary` | `402` 3K以下，`403` 3-5K，`404` 5-10K，`405` 10-20K，`406` 20-50K，`407` 50K以上 |
+| `--experience` | `101` 经验不限，`102` 应届生，`103` 1年以内，`104` 1-3年，`105` 3-5年，`106` 5-10年，`107` 10年以上，`108` 在校生 |
+| `--degree` | `202` 大专，`203` 本科，`204` 硕士，`205` 博士，`206` 高中，`208` 中专/中技，`209` 初中及以下 |
+| `--stage` | `801` 未融资，`802` 天使轮，`803` A轮，`804` B轮，`805` C轮，`806` D轮及以上，`807` 已上市，`808` 不需要融资 |
+| `--industry` | 使用项目当前的行业代码映射 |
 
-`--setup-chrome` 默认使用持久隔离 profile，不软链接、不读取、不复制主 Chrome profile。首次启动和后续重复启动都只会创建或复用 `~/.boss-zhipin-scraper/chrome-profile`，不会清空其中的 BOSS 登录态。
+## 状态和字段关系
 
-`--input ... --analysis --no-detail` 会优先加载 `--detail-output`，其次加载与输入列表同目录、同时间戳的 `boss_details_*.json`，最后查找 `~/.boss-zhipin-scraper/job-result` 下最新详情文件。
+```text
+company_list.encrypt_brand_id
+    = company_detail.brand_id
+    = company_insight.brand_id
 
-需要清空 BOSS 专用浏览器登录态时使用：
+company_detail.credit_code
+    → 爱企查搜索输入
 
-```bash
-python3 "$SCRIPT_PATH" --setup-chrome --reset-chrome-profile --cdp-port 9222
+Aiqicha company_id / pageid
+    → 爱企查页面导航标识
 ```
+
+当前 `company_list` 没有 `credit_code` 列。不要写：
+
+```sql
+SELECT credit_code FROM company_list;
+```
+
+需要统一社会信用代码时：
+
+```sql
+SELECT cl.encrypt_brand_id,
+       cd.brand_id,
+       cd.credit_code,
+       ci.credit_code AS insight_credit_code
+FROM company_list AS cl
+LEFT JOIN company_detail AS cd
+  ON cl.encrypt_brand_id = cd.brand_id
+LEFT JOIN company_insight AS ci
+  ON cl.encrypt_brand_id = ci.brand_id
+WHERE cl.query_hash = ?;
+```
+
+## 输出路径
+
+| 产物 | 路径 |
+|---|---|
+| SQLite | `output/jobs.db` |
+| 查询列表 JSON | `output/query/{query_hash}.json` |
+| BOSS 公司详情 JSON | `output/company/{brand_id}.json` |
+| 爱企查洞察 JSON | `output/insight/aqc_{credit_code}.json` |
+| 普通 CLI 列表结果 | `~/.boss-zhipin-scraper/job-result/boss_jobs_*.json` |
+| 普通 CLI 详情结果 | `~/.boss-zhipin-scraper/job-result/boss_details_*.json` |
+
+## 管道命令
+
+首次或新的列表批次：
+
+```powershell
+uv run python -u -m scripts.boss_cdp_raw --db --step list --keyword "AI Agent" --city 101020100 --pages 3 --cdp-port 9222
+```
+
+导入已有列表 JSON：
+
+```powershell
+uv run python -m scripts.company_list.pipeline --step list --list-json output/query/QUERY_HASH.json --db-path output/jobs.db
+```
+
+抓 BOSS 公司详情：
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step detail --port 9222 --db-path output/jobs.db
+```
+
+抓爱企查洞察：
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step insight --port 9222 --insight-delay 15 --db-path output/jobs.db
+```
+
+查看状态：
+
+```powershell
+uv run python -m scripts.company_list.pipeline --step status --db-path output/jobs.db
+```
+
+当前洞察必须在详情产生 `company_detail.credit_code` 后执行。
+
+## 爱企查单条查询
+
+```powershell
+uv run python -u -m scripts.company_insight.scraper CREDIT_CODE --port 9222 --delay 15
+```
+
+此处的 `CREDIT_CODE` 是统一社会信用代码，不是 BOSS `encrypt_brand_id`，也不是爱企查内部 `company_id/pageid`。
+
+## 结果字段来源
+
+- 职位标题、薪资、城市、标签、`encrypt_brand_id`：BOSS 列表响应。
+- 公司名称、公司简介、工商信息、`credit_code`：BOSS 公司详情页。
+- 法定代表人、注册资本、登记状态、企业类型等洞察字段：爱企查详情页。
+- `has_detail`、`has_insight`：`company_list` 上的管道状态字段。
+
+## 风控退出
+
+BOSS 或爱企查命中验证页时，程序退出码为 `2`，保留已完成进度并提示人工处理。完成验证后重跑原命令，不自动绕过。

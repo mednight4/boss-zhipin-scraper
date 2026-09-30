@@ -1,5 +1,11 @@
 # Task: extractor 反爬机制补全
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录 BOSS 公司详情 extractor 的历史反爬方案。详情阶段产生的 `company_detail.credit_code` 是后续爱企查搜索输入；`company_list` 没有 `credit_code` 列。三表通过 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 连接，空库顺序为 `list → company_list → detail → company_detail.credit_code → insight → company_insight`，因此详情与洞察不是可在列表入库后直接并发的两个独立步骤。
+>
+> **历史记录标记**：下文的防护设计和调用假设保留原方案背景；与当前契约冲突的执行顺序属于原方案（已过时）。
+
 ## 现状问题
 
 `scripts/company_detail/extractor.py` 的抓取防护弱于 `scripts/boss_cdp_raw.py` 的详情链路：

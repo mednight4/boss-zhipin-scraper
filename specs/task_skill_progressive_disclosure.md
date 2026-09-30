@@ -1,5 +1,13 @@
 # Task: SKILL.md 渐进式披露拆分
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录 Skill 文档拆分的历史计划。当前三表连接键是 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id`；`company_list` 没有 `credit_code` 列，详情 extractor 产生的 `company_detail.credit_code` 才是爱企查搜索输入。空库顺序为 `list → company_list → detail → company_detail.credit_code → insight → company_insight`，不能把 detail 和 insight 描述为列表入库后的直接并发。
+>
+> 当前还需显式说明：`PipelineState.decide()` 可能在 `detail_pending>0` 时返回 `SKIP`，`LIST_JSON_SAVED` 下的 `run()` 会再次抓列表，URL 入口不注入 `scrape_insight_fn`，`--step all` 总是报错。
+>
+> **历史记录标记**：下文的拆分结构、命令和验收标准保留原计划背景；与当前契约冲突的内容属于原方案（已过时）。
+
 ## 现状问题
 
 SKILL.md 当前约 430 行，agent 初次阅读项目时一次性灌入全部信息（Pipeline 状态机、参数速查、安装说明、工作原理、数据安全策略等），导致信息过曝产生幻觉。

@@ -23,32 +23,34 @@
 
 ## 🚀 30 秒快速开始
 
-```bash
-# 1. 克隆 + 装依赖
-git clone https://github.com/eatmoreduck/boss-zhipin-scraper.git
-cd boss-zhipin-scraper
-pip install -r requirements.txt          # 或 uv sync
+```powershell
+# 1. 安装依赖
+uv sync
 
-# 2. 启动隔离 Chrome 并登录（只需一次，登录态持久保存）
-python3 scripts/boss_cdp_raw.py --setup-chrome
-# 也可以显式使用 Microsoft Edge：
-# python3 scripts/boss_cdp_raw.py --setup-edge
+# 2. 启动隔离 Edge 并登录（只需一次，登录态持久保存）
+uv run python -m scripts.boss_cdp_raw --setup-edge --cdp-port 9222
 
-本机启动方式, agent注意, 使用 uv run python -m scripts.boss_cdp_raw --setup-edge
+# 3. 检查环境
+uv run python -m scripts.boss_cdp_raw --check --cdp-port 9222
 
-# 3. 抓取 + 分析
-python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --analysis
+# 4. 抓取职位
+uv run python -u -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pages 3 --analysis --cdp-port 9222
 
-# 支持全国城市（含三四五线），例如：
-python3 scripts/boss_cdp_raw.py --keyword "前端" --city 赣州 --pages 3
-# 查看支持的城市：--list-cities [关键词]
-python3 scripts/boss_cdp_raw.py --list-cities 江
-
-# 4. 抓取后生成聚合摘要 + 提示词（默认读取最新结果）
-python3 scripts/job_summary.py
+# 5. 抓取后生成聚合摘要 + 提示词
+uv run python -m scripts.job_summary --top 15
 ```
 
-抓完直接拿到：薪资分布、经验要求、高频技能词、求职材料优化提示词。提示词只基于岗位数据，不读取本地简历文件，也不给岗位算个人匹配分。
+也可以使用 BOSS 查询 URL：
+
+```powershell
+uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --no-detail --cdp-port 9222
+```
+
+支持全国城市。查看支持的城市：
+
+```powershell
+uv run python -m scripts.boss_cdp_raw --list-cities 上海
+```
 
 ## ✨ 特性
 
@@ -87,7 +89,10 @@ cd boss-zhipin-scraper
 # 2. 复制到 Hermes skills 目录
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_insight
+mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/skill
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
+cp skill/*.md ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/company_detail/__init__.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/
@@ -104,9 +109,12 @@ cp data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 不需要克隆整个仓库，直接下载必要文件：
 
 ```bash
-mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts && \
-curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md && \
+SKILL_DIR="$HOME/.hermes/skills/data-science/boss-zhipin-scraper"
+mkdir -p "$SKILL_DIR/scripts/company_detail" "$SKILL_DIR/scripts/company_list" "$SKILL_DIR/scripts/company_insight" "$SKILL_DIR/skill" && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/SKILL.md -o "$SKILL_DIR/SKILL.md" && \
+for file in agent_workflow.md install.md pipeline.md reference.md; do \
+  curl -sL "https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/skill/$file" -o "$SKILL_DIR/skill/$file"; \
+done && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/boss_cdp_raw.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
@@ -122,10 +130,14 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_list/db.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/db.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_list/pipeline.py \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_list/pipeline.py && \
+  -o "$SKILL_DIR/scripts/company_list/pipeline.py" && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_insight/__init__.py \
+  -o "$SKILL_DIR/scripts/company_insight/__init__.py" && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/company_insight/scraper.py \
+  -o "$SKILL_DIR/scripts/company_insight/scraper.py" && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
-  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
+  -o "$SKILL_DIR/data/city_codes.json"
 ```
 
 ### 方式 3：hermes skills install（需网络直连 GitHub）
@@ -157,6 +169,10 @@ npx clawhub@latest install @eatmoreduck/boss-zhipin-scraper
 ```bash
 # 检查文件是否存在
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/SKILL.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/agent_workflow.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/pipeline.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/reference.md
+ls ~/.hermes/skills/data-science/boss-zhipin-scraper/skill/install.md
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py
 ls ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/company_detail/__init__.py
@@ -180,22 +196,22 @@ cd boss-zhipin-scraper
 pip install -r requirements.txt
 
 # 2. 启动 Chrome CDP（也可改用 --setup-edge）
-python3 scripts/boss_cdp_raw.py --setup-chrome
+uv run python -m scripts.boss_cdp_raw --setup-chrome
 # macOS 会自动选择已安装的 Google Chrome 或 /Applications/Chromium.app
 # 首次使用也不会复制主 Chrome 登录态；请在弹出的 BOSS 专用浏览器中登录 zhipin.com
 # setup 会等待登录完成，并确认接口能返回明文薪资
 
 # 3. 检查环境
-python3 scripts/boss_cdp_raw.py --check
+uv run python -m scripts.boss_cdp_raw --check
 
 # 可选：真实浏览器/API smoke test（不写结果文件）
-python3 scripts/boss_cdp_raw.py --smoke-test
+uv run python -m scripts.boss_cdp_raw --smoke-test
 
 # 4. 抓取
-python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --format csv --analysis
+uv run python -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pages 3 --format csv --analysis
 
 # 5. 抓取后摘要和提示词
-python3 scripts/job_summary.py --top 15
+uv run python -m scripts.job_summary --top 15
 ```
 
 ## 参数
@@ -236,16 +252,16 @@ python3 scripts/job_summary.py --top 15
 
 ```bash
 # 读取默认结果目录下最新的 boss_jobs_*.json，并自动匹配同时间戳或最新详情文件
-python3 scripts/job_summary.py
+uv run python -m scripts.job_summary
 
 # 指定列表和详情文件
-python3 scripts/job_summary.py \
+uv run python -m scripts.job_summary \
   --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260625_1200.json \
   --details ~/.boss-zhipin-scraper/job-result/boss_details_20260625_1200.json \
   --top 15
 
 # 只输出提示词
-python3 scripts/job_summary.py --prompt-only
+uv run python -m scripts.job_summary --prompt-only
 ```
 
 打包安装后也可以使用入口命令：
@@ -260,8 +276,15 @@ uv run boss-summary --top 15
 
 ```
 boss-zhipin-scraper/
-├── SKILL.md              # Hermes Skill 定义
+├── SKILL.md              # Agent 最小启动协议
+├── AGENTS.md             # 仓库开发规则
 ├── README.md
+├── README.en.md
+├── skill/
+│   ├── agent_workflow.md  # Agent 检查工具和状态工作流
+│   ├── install.md         # 安装和分发
+│   ├── reference.md       # 参数和输出参考
+│   └── pipeline.md        # Pipeline 和数据库契约
 ├── CHANGELOG.md
 ├── LICENSE
 ├── pyproject.toml
@@ -288,10 +311,10 @@ boss-zhipin-scraper/
     ├── company_detail/   # 公司详情测试
     │   ├── __init__.py
     │   └── test_extractor.py
-    ├── company_insight/  # 洞察抓取测试（验证码检测/命名/入库）
+    ├── company_insight/  # 洞察抓取测试
     │   ├── __init__.py
     │   └── test_scraper.py
-    └── company_list/     # JobDatabase + 管道状态盘点测试
+    └── company_list/     # JobDatabase + 管道状态测试
         ├── test_db.py
         └── test_pipeline.py
 ```
@@ -302,10 +325,10 @@ boss-zhipin-scraper/
 
 ```bash
 # 命令行用法
-python -m scripts.company_detail.extractor <company_url>
+uv run python -m scripts.company_detail.extractor <company_url>
 
 # 示例
-python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
+uv run python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
 ```
 
 提取字段包括：基本信息（在招职位数、BOSS 数、公司名、融资阶段、规模、行业）、热招职位列表（含薪资/标题/经验/学历/地点/在线状态）、公司简介、官网链接、产品介绍、工商信息（企业名称、法定代表人、成立时间、注册资本、注册地址等 15 字段）、公司地址、工作时间及福利、招聘人员列表、高管介绍。
@@ -325,20 +348,41 @@ jobs = parse_hot_jobs(page_text)
 
 ## 管道 CLI 与状态查看
 
-分阶段管道（列表 → 详情 → 企查查洞察）有独立 CLI 入口，**不需要自己写脚本操作数据库**：
+分阶段管道按真实数据依赖执行：
 
-```bash
-# 查看现在到哪一步（推荐的第一入口）
-python3 -m scripts.company_list.pipeline --step status
+```text
+列表 → company_list → BOSS 公司详情 → company_detail.credit_code → 爱企查洞察 → company_insight
+```
 
-# 批量抓详情（长任务，加 -u 让进度实时可见）
-python3 -u -m scripts.company_list.pipeline --step detail
+`credit_code` 不是 BOSS `brand_id`，也不是爱企查内部 `company_id/pageid`。三张项目表最终使用以下连接键：
 
-# 批量抓爱企查洞察
-python3 -u -m scripts.company_list.pipeline --step insight
+```text
+company_list.encrypt_brand_id = company_detail.brand_id
+company_list.encrypt_brand_id = company_insight.brand_id
+```
 
-# 单条查某家公司的工商信息（抓完自动入库并置 has_insight=1）
-python3 -m scripts.company_insight.scraper 91310104MA1FR5RY3N
+查看当前状态：
+
+```powershell
+uv run python -m scripts.company_list.pipeline --step status --db-path output/jobs.db
+```
+
+批量抓 BOSS 公司详情：
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step detail --port 9222 --db-path output/jobs.db
+```
+
+详情阶段产生 `company_detail.credit_code` 后，批量抓爱企查洞察：
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step insight --port 9222 --insight-delay 15 --db-path output/jobs.db
+```
+
+单条查某家公司的工商信息：
+
+```powershell
+uv run python -u -m scripts.company_insight.scraper 91310104MA1FR5RY3N --port 9222 --delay 15
 ```
 
 `--step status` 输出六个区块，回答「哪些公司查过了 / 有数据吗 / 什么时候查的 / 需要重新查吗」：
@@ -348,11 +392,13 @@ python3 -m scripts.company_insight.scraper 91310104MA1FR5RY3N
 | `[1] 查询批次` | 有哪几批搜索，关键词/城市/职位数/最早入库时间 |
 | `[2] 总体进度` | 职位数、唯一公司数、详情与洞察的已完成/待爬计数 |
 | `[3] 待爬详情` | `has_detail=0` 的 brand_id 清单 |
-| `[4] 待爬洞察` | `has_insight=0` 的公司名 + `credit_code`；缺 `credit_code` 的单独列出并说明原因 |
-| `[5] 洞察 JSON 对账` | 规范命名 / 孤儿 / 旧命名 / 无法解析 / 重复 `credit_code`，并列出具体文件名 |
+| `[4] 待爬洞察` | 已经具备 `credit_code` 的洞察待办；缺少详情输入时不会假定洞察可执行 |
+| `[5] 洞察 JSON 对账` | 规范命名 / 孤儿 / 旧命名 / 无法解析 / 重复 `credit_code` |
 | `[6] 最近入库的洞察` | 最近 5 家入库时间，用于判断数据新鲜度 |
 
-洞察 JSON 统一落在 `output/insight/aqc_{credit_code}.json`，CLI 与管道共用同一命名。
+洞察 JSON 统一落在 `output/insight/aqc_{credit_code}.json`。只有在详情产生 `credit_code` 后，洞察管道才有可执行输入。
+
+Agent 的详细检查工具、状态路由和停止条件见 [`skill/agent_workflow.md`](skill/agent_workflow.md)。
 
 ### 遇到验证码 / 风控页时
 
@@ -401,7 +447,7 @@ BOSS 和爱企查都可能把页面重定向到验证码页。程序会主动检
 如确实需要从主 Chrome 手动导入 BOSS 登录态，可以显式运行：
 
 ```bash
-python3 scripts/boss_cdp_raw.py --setup-chrome --copy-login-state
+uv run python -m scripts.boss_cdp_raw --setup-chrome --copy-login-state
 ```
 
 `--copy-login-state` 每次运行都会覆盖隔离 profile 内对应的 Cookie 相关文件；日常启动不要加这个参数。它只复制 `Local State` 和 `Default/Cookies*`、`Default/Network/Cookies*` 这类 Cookie 数据库相关文件，不复制密码库、历史记录、扩展或完整 profile。
@@ -411,7 +457,7 @@ macOS 上的导入源会与自动选中的浏览器保持一致：Google Chrome 
 需要清空专用浏览器登录态时使用：
 
 ```bash
-python3 scripts/boss_cdp_raw.py --setup-chrome --reset-chrome-profile
+uv run python -m scripts.boss_cdp_raw --setup-chrome --reset-chrome-profile
 ```
 
 ### 用完如何收尾
@@ -419,7 +465,7 @@ python3 scripts/boss_cdp_raw.py --setup-chrome --reset-chrome-profile
 抓取/分析结束后，专用 Chrome 不会自动关闭（默认保留登录态，方便你接着跑下一条抓取）。确认不再使用时，可以手动收尾：
 
 ```bash
-python3 scripts/boss_cdp_raw.py --stop-chrome
+uv run python -m scripts.boss_cdp_raw --stop-chrome
 ```
 
 `--stop-chrome`/`--stop-edge` 只关闭 scraper 隔离 profile（`--user-data-dir`）对应的 Chrome 或 Edge 进程，**绝不**按端口或进程名去 kill，因此不会误伤你正在用的主 Chrome、Edge、Gmail、GitHub 等账号。
@@ -427,7 +473,7 @@ python3 scripts/boss_cdp_raw.py --stop-chrome
 如果你希望某次抓取正常结束后就顺手关掉 Chrome，可以加 `--close-chrome`：
 
 ```bash
-python3 scripts/boss_cdp_raw.py --keyword "AI Agent" --city 上海 --pages 3 --close-chrome
+uv run python -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pages 3 --close-chrome
 ```
 
 `--close-chrome` 默认不开启；且只在抓取走完的**成功路径**上触发，登录失败、异常退出等情况不会关闭 Chrome，登录态得以保留。

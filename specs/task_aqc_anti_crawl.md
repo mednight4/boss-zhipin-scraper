@@ -1,5 +1,11 @@
 # Task: 爱企查 scraper 反爬机制补全
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件只记录爱企查抓取防护的历史方案。洞察输入不是列表表中的 `credit_code`：详情 extractor 从 `business_info` 取统一社会信用代码并写入 `company_detail.credit_code`，再供爱企查搜索。三表通过 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 连接；爱企查 `company_id/pageid` 只用于页面导航。从空库开始必须先完成 detail，不能把 detail 与 insight 描述为列表入库后的直接并发。
+>
+> **历史记录标记**：下文的反爬设计、参数和验证项保留原方案背景；与当前契约冲突的执行顺序属于原方案（已过时）。
+
 ## 现状问题
 
 `scripts/company_insight/scraper.py` 的抓取防护薄弱，连续快速导航易触发爱企查风控：

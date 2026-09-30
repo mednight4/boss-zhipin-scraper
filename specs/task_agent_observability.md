@@ -1,5 +1,13 @@
 # Task: Agent 防呆与可观测性 — 7 个问题的系统性解法
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件是可观测性改动的历史方案。`company_list` 没有 `credit_code` 列；列表阶段只写列表数据，详情 extractor 从 `business_info` 取统一社会信用代码并写入 `company_detail.credit_code`。爱企查用该字段搜索，页面内的 `company_id/pageid` 只用于导航。
+>
+> 项目三表通过 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 关联。空库实际顺序为 `list → company_list → detail → company_detail.credit_code → insight → company_insight`，不能把列表入库后的 detail 与 insight 说成可直接并发。洞察待处理查询还要求 `company_detail` 可 JOIN，且 `cl.has_detail=1`、`cl.has_insight=0`；`get_stats()`/`get_query_info()` 的洞察待处理数因此只统计能 JOIN 详情的公司。`status` 默认盘点全库，不自动限定某一批次。
+>
+> **历史记录标记**：下文保留原问题、目标和实现计划。与当前契约冲突的表字段、并发关系或命令属于原方案（已过时），不可作为现行实现说明。
+
 ## 现状问题
 
 上一轮 agent 接手项目时写了 6 个临时脚本（`check_db.py`、`check_insight.py`、`check_credit_code.py`、`check_companies.py`、`run_insight.py` 等），并多次绕过数据访问层直接操作 SQLite。根本原因是项目缺乏足够的防呆设计和可观测性入口：

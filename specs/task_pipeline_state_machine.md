@@ -1,5 +1,22 @@
 # Task: Pipeline 状态机与统一决策入口
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 当前列表阶段不会把 `credit_code` 写入 `company_list`。真实链路是：
+>
+> ```text
+> list → company_list.encrypt_brand_id → detail → company_detail.credit_code → insight → company_insight
+> ```
+>
+> ```text
+> company_list.encrypt_brand_id = company_detail.brand_id
+> company_list.encrypt_brand_id = company_insight.brand_id
+> company_detail.credit_code → 爱企查搜索输入
+> Aiqicha company_id/pageid → 爱企查页面导航标识
+> ```
+>
+> 因此，列表导入后不能直接宣称 detail 和 insight 可以并发；洞察需要详情阶段产生的 `credit_code`。下文中与此契约冲突的早期设计内容均视为已被当前实现取代。
+
 ## 目标
 
 新增 `PipelineState` 类作为管线统一决策入口：用户给 URL → 系统自动判断跳过/导入/爬取/刷新 → 按状态机推进到两张表就绪。补充 `db.py` 查询方法，更新 `SKILL.md` 工作流文档。
@@ -158,23 +175,23 @@ FRESHNESS_HOURS = int(os.environ.get("BOSS_QUERY_FRESHNESS_HOURS", "24"))
 
 在「自动化流程」之后插入「管道工作流 (Pipeline)」章节。
 
-### 状态图
+### 当前状态图
 
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE
-    IDLE --> LIST_JSON_SAVED : 列表爬取
-    LIST_JSON_SAVED --> LIST_DB_IMPORTED : 导入 company_list
-    LIST_DB_IMPORTED --> DETAIL_JSON_SAVED : 详情爬取
-    DETAIL_JSON_SAVED --> COMPLETE : 导入 company_detail
+    IDLE --> LIST_JSON_SAVED : 列表抓取并保存JSON
+    LIST_JSON_SAVED --> LIST_DB_IMPORTED : 导入company_list
+    LIST_DB_IMPORTED --> DETAIL_PENDING : has_detail=0
+    DETAIL_PENDING --> DETAIL_DONE : 详情导入并置has_detail=1
+    DETAIL_DONE --> INSIGHT_PENDING : company_detail.credit_code可用
+    INSIGHT_PENDING --> COMPLETE : 洞察导入并置has_insight=1
     COMPLETE --> [*]
-
-    note right of LIST_DB_IMPORTED
-        has_detail=0 → 继续爬
-        has_detail=1 → 跳到 COMPLETE
-    end note
+    DETAIL_PENDING --> SECURITY_BLOCKED : BOSS验证
+    INSIGHT_PENDING --> INSIGHT_BLOCKED : 爱企查风控
 ```
 
+`company_insight` 的 `brand_id` 通过 `company_list.encrypt_brand_id` 连接；`credit_code` 只作为爱企查搜索输入。
 ### 决策流程图
 
 ```mermaid
@@ -197,25 +214,34 @@ flowchart TD
 ```mermaid
 erDiagram
     company_list ||--o{ company_detail : "encrypt_brand_id = brand_id"
+    company_list ||--o{ company_insight : "encrypt_brand_id = brand_id"
     company_list {
-        string encrypt_brand_id PK "公司唯一键"
+        string encrypt_brand_id PK "BOSS公司键"
         string job_id "职位唯一键"
         int has_detail "0=待爬 1=已爬"
+        int has_insight "0=待爬 1=已爬"
     }
     company_detail {
-        string brand_id PK "公司唯一键"
-        string business_info_json "含统一社会信用代码"
+        string brand_id PK "= company_list.encrypt_brand_id"
+        string credit_code "爱企查搜索输入"
+    }
+    company_insight {
+        string brand_id PK "= company_list.encrypt_brand_id"
+        string credit_code "洞察结果字段"
     }
 ```
 
-联立键：`company_list.encrypt_brand_id` = `company_detail.brand_id`
+`credit_code` 不是三张表的连接键，爱企查 `company_id/pageid` 也不进入项目三表关系。
 
 ```sql
--- 查询某关键词下职位 + 公司详情
 SELECT cl.title, cl.salary, cl.location,
-       cd.company_name, cd.stage, cd.scale, cd.description
-FROM company_list cl
-LEFT JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+       cd.company_name, cd.stage, cd.scale, cd.description,
+       cd.credit_code, ci.legal_person, ci.business_status
+FROM company_list AS cl
+LEFT JOIN company_detail AS cd
+  ON cl.encrypt_brand_id = cd.brand_id
+LEFT JOIN company_insight AS ci
+  ON cl.encrypt_brand_id = ci.brand_id
 WHERE cl.query_hash = 'xxxx'
 ORDER BY cl.salary DESC;
 ```

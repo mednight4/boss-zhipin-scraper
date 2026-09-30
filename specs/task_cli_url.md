@@ -1,5 +1,13 @@
 # Task: CLI --url 参数 — 一条 URL 跑完整管道
 
+> **当前实现契约（优先于本历史设计记录）**
+>
+> 本文件记录 `--url` 入口的历史方案。`company_list` 没有 `credit_code` 列；详情 extractor 取出的统一社会信用代码写入 `company_detail.credit_code`，爱企查以此搜索，`company_id/pageid` 只用于页面 URL 导航。三表使用 `company_list.encrypt_brand_id = company_detail.brand_id = company_insight.brand_id` 连接，空库顺序是 `list → company_list → detail → company_detail.credit_code → insight → company_insight`。
+>
+> 当前 URL 入口不注入 `scrape_insight_fn`，不能据此声称会自动完成洞察；入口分支优先于 `--db`。`PipelineState.decide()` 可能在 `detail_pending>0` 时返回 `SKIP`（只按新鲜度判断），而 `run()` 处于 `LIST_JSON_SAVED` 时会再次调用 `_step_scrape_list`，不会自动把现有列表 JSON 导入。`--step all` 当前总是报错。
+>
+> **历史记录标记**：下文的目标、实现片段和验证项保留原方案背景；与当前契约冲突的“完整管道”或恢复语义属于原方案（已过时）。
+
 ## 目标
 
 新增 `--url` CLI 参数到 `boss_cdp_raw.py`。用户给一条 BOSS 查询 URL，系统自动解析 keyword/city/filters 并通过 PipelineState 一键跑完整管线。
