@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import glob
+import re
+import sqlite3
 import sys
 from datetime import datetime
 
@@ -44,7 +46,14 @@ def step2_import_list(db, json_path):
 
 
 def step3_scrape_details(db, scrape_detail_fn, detail_json_dir=None):
-    """Step 3: 扫描 DB → 逐公司爬取详情 → 保存 JSON → 返回 json_paths."""
+    """Step 3: 扫描 DB → 逐公司爬取详情 → 保存 JSON → 返回 json_paths.
+
+    命中验证码/安全校验页时抛 SecurityCheckError 并中止整轮，交人工处理。
+    这一点很关键：验证页文本同样能被解析成一份「几乎全空」的详情，若照旧写入
+    DB 并置 has_detail=1，就会变成静默污染——状态入口显示已完成，实际没有数据。
+    """
+    from scripts.boss_cdp_raw import SecurityCheckError
+
     if detail_json_dir is None:
         detail_json_dir = COMPANY_DIR
     os.makedirs(detail_json_dir, exist_ok=True)
@@ -56,6 +65,7 @@ def step3_scrape_details(db, scrape_detail_fn, detail_json_dir=None):
         company_link = brand["company_link"]
         if not brand_id or not company_link:
             continue
+        label = brand.get("company_name") or brand_id
         json_path = os.path.join(detail_json_dir, f"{brand_id}.json")
         try:
             detail = scrape_detail_fn(company_link)
@@ -64,8 +74,18 @@ def step3_scrape_details(db, scrape_detail_fn, detail_json_dir=None):
             db.import_detail_from_json(json_path, brand_id)
             db.mark_detail_done(brand_id)
             imported += 1
-        except Exception as e:
-            print(f"详情爬取失败 [{brand_id}]: {e}")
+            print(f"详情抓取成功 [{label}]: {brand_id}", flush=True)
+        except SecurityCheckError as e:
+            # 验证码/安全校验：中止整轮。已完成的进度已入库，人工处理后重跑续做
+            print(f"\n🛑 {e}", flush=True)
+            print(
+                f"   已中止本轮详情抓取（已完成 {imported} 家）。"
+                f"人工完成验证后重跑同一命令即可续做。",
+                flush=True,
+            )
+            raise
+        except (OSError, sqlite3.Error, json.JSONDecodeError, TypeError, ValueError, RuntimeError) as e:
+            print(f"详情爬取失败 [{label}]: {e}", flush=True)
             continue
     return imported
 
@@ -93,6 +113,10 @@ def step4_import_details(db, json_paths=None, detail_json_dir=None):
 def step5_scrape_insights(db, scrape_insight_fn, insight_json_dir=None, delay_range=(15, 25)):
     """Step 5: 扫描 DB 中待跑洞察的公司 → 企查查抓取 → 保存 JSON → 导入 DB → 更新 has_insight.
 
+    两种中断恢复行为：
+    - JSON 已存在但 has_insight 仍为 0（上次导入失败/进程被杀）：直接补导入，不重抓。
+    - 命中验证码/风控页：抛 InsightBlockedError 中止整轮，交人工处理，不继续下一家。
+
     Args:
         db: JobDatabase 实例
         scrape_insight_fn: 洞察抓取函数, 签名 fn(credit_code, cdp_port) -> dict
@@ -102,44 +126,77 @@ def step5_scrape_insights(db, scrape_insight_fn, insight_json_dir=None, delay_ra
     Returns:
         int: 成功抓取的公司数
     """
+    from scripts.company_insight.scraper import InsightBlockedError, insight_json_path
+
     if insight_json_dir is None:
         insight_json_dir = INSIGHT_DIR
     os.makedirs(insight_json_dir, exist_ok=True)
 
     brands = db.get_pending_insight_brands()
     imported = 0
+    reused = 0
     skipped = 0
     for brand in brands:
         brand_id = brand["encrypt_brand_id"]
         credit_code = brand.get("credit_code", "")
         company_name = brand.get("company_name", "")
+        label = company_name or brand_id
 
         # 没有 credit_code 无法查爱企查, 跳过
         if not credit_code:
-            print(f"跳过 [{company_name or brand_id}]: 缺少 credit_code")
+            print(f"跳过 [{label}]: 缺少 credit_code", flush=True)
             skipped += 1
             continue
 
-        json_path = os.path.join(insight_json_dir, f"aqc_{credit_code}.json")
+        json_path = str(insight_json_path(credit_code, insight_json_dir))
+
+        # JSON 已落盘但 has_insight 仍为 0：复用已有结果补导入, 不重抓（省一次风控暴露）
+        if os.path.exists(json_path):
+            try:
+                db.import_insight_from_json(json_path, brand_id)
+                db.mark_insight_done(brand_id)
+                reused += 1
+                print(f"洞察补导入 [{label}]: 复用 {os.path.basename(json_path)}", flush=True)
+                continue
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                print(f"已有 JSON 无法导入, 将重抓 [{label}]: {e}", flush=True)
+
         try:
             data = scrape_insight_fn(credit_code)
+        except InsightBlockedError as e:
+            # 风控/验证码：中止整轮, 已完成的进度已入库, 人工处理后可重跑续做
+            print(f"\n🛑 {e}", flush=True)
+            print(
+                f"   已中止本轮洞察抓取（已完成 {imported} 家 + 补导入 {reused} 家）。"
+                f"人工完成验证后重跑同一命令即可续做。",
+                flush=True,
+            )
+            raise
+        except Exception as e:
+            print(f"洞察爬取失败 [{label}]: {e}", flush=True)
+            continue
+
+        try:
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             db.import_insight_from_json(json_path, brand_id)
             db.mark_insight_done(brand_id)
-            imported += 1
-            print(f"洞察抓取成功 [{company_name or brand_id}]: {credit_code}")
-        except Exception as e:
-            print(f"洞察爬取失败 [{company_name or brand_id}]: {e}")
+        except (OSError, sqlite3.Error, json.JSONDecodeError, ValueError) as e:
+            print(f"洞察入库失败 [{label}]: {e}", flush=True)
             continue
 
+        imported += 1
+        print(f"洞察抓取成功 [{label}]: {credit_code}", flush=True)
+
     if skipped:
-        print(f"洞察跳过: {skipped} 个公司 (无 credit_code)")
+        print(f"洞察跳过: {skipped} 个公司 (无 credit_code)", flush=True)
+    if reused:
+        print(f"洞察补导入: {reused} 个公司 (复用已有 JSON, 未重新抓取)", flush=True)
 
     # 导入后校验：检查是否有不完整数据
     total, incomplete_count, _ = db.validate_insight_completeness()
     if incomplete_count > 0:
-        print(f"⚠️ 警告: company_insight 表中 {incomplete_count}/{total} 行存在空字段")
+        print(f"⚠️ 警告: company_insight 表中 {incomplete_count}/{total} 行存在空字段", flush=True)
 
     return imported
 
@@ -453,21 +510,215 @@ def query(query_url: str, **kwargs) -> dict:
     return result
 
 
-def print_status():
-    """打印所有查询批次状态。"""
-    db = JobDatabase()
+# ── 状态盘点 ────────────────────────────────────────────────────
+# 洞察 JSON 的文件名与 credit_code 映射规则，print_status 与清理工具共用。
+CREDIT_CODE_RE = re.compile(r"^[0-9A-Z]{18}$")
+INSIGHT_FILENAME_PREFIX = "aqc_"
+
+
+def insight_file_credit_code(filename):
+    """从洞察 JSON 文件名推断 credit_code；推断不出（如 brand_id 命名）返回 None。"""
+    stem = filename[:-5] if filename.endswith(".json") else filename
+    if stem.startswith(INSIGHT_FILENAME_PREFIX):
+        stem = stem[len(INSIGHT_FILENAME_PREFIX):]
+    return stem if CREDIT_CODE_RE.match(stem) else None
+
+
+def read_credit_code_from_json(path):
+    """读取 JSON 内容里的 credit_code 字段。
+
+    用于反查 brand_id 命名的历史文件（文件名本身不含 credit_code），
+    否则这类重复抓取在盘点上会隐形。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    credit_code = str(data.get("credit_code") or "").strip()
+    return credit_code if CREDIT_CODE_RE.match(credit_code) else None
+
+
+def classify_insight_files(insight_dir, resolve_brand_id):
+    """盘点 output/insight 下的文件，暴露命名漂移、孤儿与重复抓取。
+
+    分类：
+    - canonical: `aqc_{credit_code}.json` 且 credit_code 能反查到当前批次的 brand_id
+    - orphan:    `aqc_{credit_code}.json` 但反查不到 brand_id（不在当前批次内）
+    - legacy:    非 `aqc_` 前缀命名（历史 `{credit_code}.json` / `{brand_id}.json`）
+    - duplicates: 同一 credit_code 对应多个文件（重复抓取留下的冗余）
+    - unreadable: 无法解析出 credit_code 的文件（损坏或非洞察 JSON）
+
+    文件名不含 credit_code 时回读 JSON 内容里的 credit_code，保证重复抓取不隐形。
+
+    Args:
+        insight_dir: 洞察 JSON 目录
+        resolve_brand_id: callable(credit_code) -> brand_id 或 None
+
+    Returns:
+        dict: {"canonical", "orphan", "legacy", "duplicates", "unreadable", "total"}
+    """
+    canonical, orphan, legacy, unreadable = [], [], [], []
+    by_credit_code = {}
+
+    if not os.path.isdir(insight_dir):
+        return {
+            "canonical": canonical, "orphan": orphan, "legacy": legacy,
+            "duplicates": {}, "unreadable": unreadable, "total": 0,
+        }
+
+    for name in sorted(os.listdir(insight_dir)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(insight_dir, name)
+        credit_code = insight_file_credit_code(name)
+        is_canonical_name = name.startswith(INSIGHT_FILENAME_PREFIX)
+
+        if credit_code is None:
+            # 文件名不含 credit_code：回读内容，识别 brand_id 命名的历史文件
+            credit_code = read_credit_code_from_json(path)
+
+        if credit_code is None:
+            unreadable.append(name)
+            continue
+
+        by_credit_code.setdefault(credit_code, []).append(name)
+
+        if is_canonical_name:
+            if resolve_brand_id(credit_code):
+                canonical.append(name)
+            else:
+                orphan.append(name)
+        else:
+            legacy.append(name)
+
+    duplicates = {cc: names for cc, names in by_credit_code.items() if len(names) > 1}
+    total = len(canonical) + len(orphan) + len(legacy) + len(unreadable)
+    return {
+        "canonical": canonical,
+        "orphan": orphan,
+        "legacy": legacy,
+        "duplicates": duplicates,
+        "unreadable": unreadable,
+        "total": total,
+    }
+
+
+def _print_name_list(title, names, limit=20):
+    """打印名称清单，超过 limit 只显示前 limit 条并提示剩余数量。"""
+    if not names:
+        return
+    print(f"\n{title} ({len(names)})")
+    for name in names[:limit]:
+        print(f"  - {name}")
+    if len(names) > limit:
+        print(f"  ... 还有 {len(names) - limit} 家")
+
+
+def print_status(db_path=None, insight_json_dir=None):
+    """打印批次进度、待办清单与 JSON/DB 对账 —— 唯一的「现在到哪一步」入口。
+
+    涵盖原来靠自建 check_*.py 才能回答的全部问题：哪些公司查过了、有数据吗、
+    什么时候查的、还需要重新查吗、磁盘上的 JSON 有没有重复或孤儿。
+    不要另写脚本查状态，用 `--step status`。
+    """
+    db = JobDatabase(db_path)
     db.connect()
     db.init_schema()
     try:
+        stats = db.get_stats()
         queries = db.get_all_query_hashes()
+
+        print("=" * 78)
+        print("  BOSS 抓取管道状态")
+        print("=" * 78)
+
+        # ── 1. 批次概览 ──────────────────────────────────────────
+        print("\n[1] 查询批次")
         if not queries:
-            print("暂无查询批次")
-            return
-        print(f"{'query_hash':<18} {'keyword':<15} {'city':<8} {'jobs':>6} {'created_at':<22}")
-        print("-" * 75)
-        for q in queries:
-            print(f"{q['query_hash']:<18} {q['keyword'] or '':<15} {q['city'] or '':<8} "
-                  f"{q['job_count']:>6} {q['oldest_create_time'] or '':<22}")
+            print("  暂无查询批次（还没跑过列表抓取）")
+        else:
+            print(f"  {'query_hash':<18}{'keyword':<16}{'city':<10}{'jobs':>6}  {'最早入库':<20}")
+            print("  " + "-" * 74)
+            for q in queries:
+                print(f"  {q['query_hash']:<18}{(q['keyword'] or ''):<16}"
+                      f"{(q['city'] or ''):<10}{q['job_count']:>6}  "
+                      f"{(q['oldest_create_time'] or '')[:19]:<20}")
+
+        # ── 2. 总体统计 ──────────────────────────────────────────
+        print("\n[2] 总体进度")
+        print(f"  职位            : {stats['total_jobs']}")
+        print(f"  唯一公司        : {stats['unique_companies']}")
+        print(f"  详情 已完成/待爬: {stats['done_detail']} / {stats['pending_detail']}")
+        print(f"  洞察 已完成/待爬: {stats['done_insight']} / {stats['pending_insight']}")
+
+        # ── 3. 待爬详情 ──────────────────────────────────────────
+        pending_detail = db.get_pending_detail_brands()
+        _print_name_list(
+            "[3] 待爬详情（has_detail=0）",
+            [b["encrypt_brand_id"] for b in pending_detail],
+        )
+        if not pending_detail:
+            print("\n[3] 待爬详情: 无")
+
+        # ── 4. 待爬洞察（含阻塞原因）────────────────────────────
+        pending_insight = db.get_pending_insight_brands()
+        print(f"\n[4] 待爬洞察（has_detail=1 且 has_insight=0）: {len(pending_insight)} 家")
+        blocked = []
+        runnable = []
+        for brand in pending_insight:
+            label = brand.get("company_name") or brand["encrypt_brand_id"]
+            credit_code = (brand.get("credit_code") or "").strip()
+            if credit_code:
+                runnable.append(f"{label} | {credit_code}")
+            else:
+                blocked.append(f"{label} | brand_id={brand['encrypt_brand_id']}")
+        for line in runnable[:20]:
+            print(f"  - {line}")
+        if len(runnable) > 20:
+            print(f"  ... 还有 {len(runnable) - 20} 家")
+        if blocked:
+            print(f"\n  ⚠️ 其中 {len(blocked)} 家缺 credit_code，无法查爱企查（需先补详情）:")
+            for line in blocked[:10]:
+                print(f"    ! {line}")
+
+        # ── 5. 洞察 JSON 与 DB 对账 ─────────────────────────────
+        if insight_json_dir is None:
+            insight_json_dir = INSIGHT_DIR
+        print(f"\n[5] 洞察 JSON 对账 ({insight_json_dir})")
+        inventory = classify_insight_files(
+            insight_json_dir, db.resolve_brand_id_by_credit_code
+        )
+        if inventory["total"] == 0:
+            print("  目录不存在或没有 JSON（还没抓过洞察）")
+        else:
+            print(f"  JSON 文件总数     : {inventory['total']}")
+            print(f"  规范命名          : {len(inventory['canonical'])}  (aqc_{{credit_code}}.json)")
+            print(f"  孤儿（不在批次内）: {len(inventory['orphan'])}")
+            print(f"  旧命名            : {len(inventory['legacy'])}")
+            print(f"  无法解析          : {len(inventory['unreadable'])}")
+            print(f"  重复 credit_code  : {len(inventory['duplicates'])}")
+            _print_name_list("  孤儿文件（不在当前批次，可安全删除）", inventory["orphan"], limit=10)
+            _print_name_list("  旧命名文件（规范版已存在即可删除）", inventory["legacy"], limit=10)
+            _print_name_list("  无法解析文件（建议人工确认后删除）", inventory["unreadable"], limit=10)
+            if inventory["duplicates"]:
+                print(f"\n  重复抓取明细（同一公司多份文件，保留 aqc_ 版本即可）:")
+                for credit_code, names in sorted(inventory["duplicates"].items())[:10]:
+                    print(f"    {credit_code}: {', '.join(names)}")
+                if len(inventory["duplicates"]) > 10:
+                    print(f"    ... 还有 {len(inventory['duplicates']) - 10} 组")
+
+        # ── 6. 最近抓取时间 ─────────────────────────────────────
+        recent = db.get_recent_insight_scrapes(limit=5)
+        if recent:
+            print("\n[6] 最近入库的洞察")
+            for row in recent:
+                print(f"  {(row['scraped_at'] or '')[:19]}  "
+                      f"{row['company_name'] or row['brand_id']}  ({row['credit_code']})")
+
+        print("\n" + "=" * 78)
     finally:
         db.close()
 
@@ -511,15 +762,25 @@ def main():
 
     args = parser.parse_args()
 
+    # 行缓冲：被 agent 当子进程调用时输出不被块缓冲，进度实时可见
+    from scripts.boss_cdp_raw import SecurityCheckError, enable_line_buffering
+    from scripts.company_insight.scraper import InsightBlockedError
+    enable_line_buffering()
+
     if args.step == "status":
-        print_status()
+        print_status(db_path=args.db_path)
         return
 
     if args.step == "insight":
-        imported = run_insight_pipeline(
-            scrape_insight_fn=_insight_fn_factory(args.port, args.insight_delay),
-            db_path=args.db_path,
-        )
+        try:
+            imported = run_insight_pipeline(
+                scrape_insight_fn=_insight_fn_factory(args.port, args.insight_delay),
+                db_path=args.db_path,
+            )
+        except InsightBlockedError as e:
+            print(f"\n🛑 {e}")
+            print("   已中止本轮；人工完成验证后重跑同一命令即可续做。")
+            sys.exit(2)
         print(f"\n企查查洞察完成: {imported} 家公司")
         return
 
@@ -530,6 +791,10 @@ def main():
         try:
             imported = step3_scrape_details(db, _detail_fn_factory(args.port))
             print(f"\n详情抓取完成: {imported} 家公司")
+        except SecurityCheckError as e:
+            print(f"\n🛑 {e}")
+            print("   已中止本轮；人工完成验证后重跑同一命令即可续做。")
+            sys.exit(2)
         finally:
             db.close()
         return

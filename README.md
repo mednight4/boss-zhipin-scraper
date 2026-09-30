@@ -278,16 +278,22 @@ boss-zhipin-scraper/
 │   │   ├── __init__.py
 │   │   ├── db.py
 │   │   └── pipeline.py
-│   └── company_insight/  # 企查查洞察子包（预留）
+│   └── company_insight/  # 企查查洞察子包
+│       ├── __init__.py
+│       └── scraper.py    # 爱企查工商信息抓取（CDP 自爬虫）
 └── tests/
-    ├── chrome_setup/     # 城市码表防回归测试
+    ├── chrome_setup/     # 城市码表防回归 + 验证码检测测试
     │   ├── __init__.py
     │   └── test_chrome_setup.py
     ├── company_detail/   # 公司详情测试
     │   ├── __init__.py
     │   └── test_extractor.py
-    └── company_list/     # JobDatabase 单元测试
-        └── test_db.py
+    ├── company_insight/  # 洞察抓取测试（验证码检测/命名/入库）
+    │   ├── __init__.py
+    │   └── test_scraper.py
+    └── company_list/     # JobDatabase + 管道状态盘点测试
+        ├── test_db.py
+        └── test_pipeline.py
 ```
 
 ## 公司详情提取
@@ -316,6 +322,49 @@ company = scrape_company_detail("https://www.zhipin.com/gongsi/abc123.html")
 basic = parse_basic_info(page_text)
 jobs = parse_hot_jobs(page_text)
 ```
+
+## 管道 CLI 与状态查看
+
+分阶段管道（列表 → 详情 → 企查查洞察）有独立 CLI 入口，**不需要自己写脚本操作数据库**：
+
+```bash
+# 查看现在到哪一步（推荐的第一入口）
+python3 -m scripts.company_list.pipeline --step status
+
+# 批量抓详情（长任务，加 -u 让进度实时可见）
+python3 -u -m scripts.company_list.pipeline --step detail
+
+# 批量抓爱企查洞察
+python3 -u -m scripts.company_list.pipeline --step insight
+
+# 单条查某家公司的工商信息（抓完自动入库并置 has_insight=1）
+python3 -m scripts.company_insight.scraper 91310104MA1FR5RY3N
+```
+
+`--step status` 输出六个区块，回答「哪些公司查过了 / 有数据吗 / 什么时候查的 / 需要重新查吗」：
+
+| 区块 | 内容 |
+|------|------|
+| `[1] 查询批次` | 有哪几批搜索，关键词/城市/职位数/最早入库时间 |
+| `[2] 总体进度` | 职位数、唯一公司数、详情与洞察的已完成/待爬计数 |
+| `[3] 待爬详情` | `has_detail=0` 的 brand_id 清单 |
+| `[4] 待爬洞察` | `has_insight=0` 的公司名 + `credit_code`；缺 `credit_code` 的单独列出并说明原因 |
+| `[5] 洞察 JSON 对账` | 规范命名 / 孤儿 / 旧命名 / 无法解析 / 重复 `credit_code`，并列出具体文件名 |
+| `[6] 最近入库的洞察` | 最近 5 家入库时间，用于判断数据新鲜度 |
+
+洞察 JSON 统一落在 `output/insight/aqc_{credit_code}.json`，CLI 与管道共用同一命名。
+
+### 遇到验证码 / 风控页时
+
+BOSS 和爱企查都可能把页面重定向到验证码页。程序会主动检测并**中止整轮抓取**，以退出码 `2` 结束，同时打印需要人工打开的 URL：
+
+```
+🛑 BOSS 触发验证码/安全校验，已中止本轮抓取（Java @ 上海）：URL 命中安全校验特征「_security_check」: ...
+   请人工在 Chrome 中打开 ... 完成验证后重跑，程序不会自动绕过。
+   已中止本轮；人工完成验证后重跑同一命令即可续做。
+```
+
+已完成的进度都已入库，人工在浏览器里完成验证后重跑同一命令会自动续做。程序不会尝试指纹伪造、代理轮换或验证码识别（见 `CONTRIBUTING.md` 的合规红线）。
 
 ## 工作原理
 

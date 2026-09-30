@@ -511,6 +511,26 @@ class JobDatabase:
         row = cur.fetchone()
         return row[0] if row else None
 
+    def get_recent_insight_scrapes(self, limit=5):
+        """返回最近入库的洞察记录（按 scraped_at 倒序）。
+
+        Args:
+            limit: 最多返回条数
+
+        Returns:
+            list[dict]: 含 brand_id / company_name / credit_code / scraped_at
+        """
+        self.connect()
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT brand_id, company_name, credit_code, scraped_at
+               FROM company_insight
+               ORDER BY scraped_at DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
     # ── 统计 ──────────────────────────────────────────────────────
 
     def get_stats(self):

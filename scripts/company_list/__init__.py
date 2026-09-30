@@ -9,6 +9,13 @@
   - query: 一键入口便捷函数
   - print_status: 打印所有查询批次状态
   - FRESHNESS_HOURS: 查询结果新鲜度（小时）
+
+`pipeline` 的导出走模块级 `__getattr__` 惰性转发，不在导入包时立刻执行。
+原因：`python -m scripts.company_list.pipeline` 会先导入包再以 `__main__` 执行
+`pipeline` 模块，若包在导入时就把它塞进 `sys.modules`，runpy 会打
+「found in sys.modules after import of package ... may result in unpredictable
+behaviour」的 RuntimeWarning——而 `--step status` 现在是推荐的第一入口，
+这条警告会误导使用者。
 """
 
 from scripts.company_list.db import (
@@ -20,17 +27,17 @@ from scripts.company_list.db import (
     COMPANY_DIR,
 )
 
-from scripts.company_list.pipeline import (
-    step1_scrape_list,
-    step2_import_list,
-    step3_scrape_details,
-    step4_import_details,
-    run_full_pipeline,
-    PipelineState,
-    query,
-    print_status,
-    FRESHNESS_HOURS,
-)
+_LAZY_PIPELINE_EXPORTS = frozenset({
+    "step1_scrape_list",
+    "step2_import_list",
+    "step3_scrape_details",
+    "step4_import_details",
+    "run_full_pipeline",
+    "PipelineState",
+    "query",
+    "print_status",
+    "FRESHNESS_HOURS",
+})
 
 __all__ = [
     "JobDatabase",
@@ -49,3 +56,16 @@ __all__ = [
     "print_status",
     "FRESHNESS_HOURS",
 ]
+
+
+def __getattr__(name):
+    """惰性转发 `pipeline` 的导出（PEP 562），保持 `from scripts.company_list import X` 可用。"""
+    if name in _LAZY_PIPELINE_EXPORTS:
+        from scripts.company_list import pipeline
+
+        return getattr(pipeline, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(__all__)

@@ -23,6 +23,9 @@
 - 删除死代码：`FETCH_API_JS_TEMPLATE`、`build_login_probe_url`、`parse_api_jobs_eval_value`、`should_use_dom_fallback`；`CDPSession` 新增事件缓冲与 `drain_events`；测试从 92 增至 96 个
 
 ### 新增
+- 新增 `--step status` 统一状态入口（#97）：`pipeline.print_status()` 重写为六区块盘点——查询批次、总体进度（职位/公司/详情/洞察计数）、待爬详情清单、待爬洞察清单（缺 `credit_code` 的单独列出并说明原因）、洞察 JSON 与 DB 对账（规范命名/孤儿/旧命名/无法解析/重复 `credit_code`，并列出具体文件名）、最近 5 家入库时间。此前这些信息只能靠 agent 自建 `check_*.py` 才能回答，是「接手者乱写脚本」的直接诱因。配套 `db.get_recent_insight_scrapes()`。`SKILL.md` 第 0 节新增「禁止行为」表，把「想做的事 → 正确入口」逐条映射。
+- 洞察 JSON 命名统一为 `aqc_{credit_code}.json`（#97）：新增 `scraper.insight_json_path()` / `save_insight_json()`，CLI 与 `pipeline.step5/step6` 共用同一命名，终结 `{credit_code}.json` / `{brand_id}.json` / `aqc_{credit_code}.json` 三种命名并存、无法判断哪家抓过的状态漂移。`pipeline.classify_insight_files()` 会回读文件名不含 `credit_code` 的历史文件内容，让重复抓取在盘点上不再隐形。
+- 新增行缓冲 helper `enable_line_buffering()`（#97）：被 agent 当子进程调用、stdout 走管道时 Python 默认按块缓冲，长任务十几分钟看不到任何输出、被误判成卡死。各 CLI 入口（`pipeline` / `company_insight.scraper`）统一调用，`SKILL.md` 同时强调长任务加 `-u`。
 - 企查查洞察爬虫接入 Pipeline 体系：`scripts/company_insight/scraper.py` 新增企查查抓取（通过 credit_code 搜索 → 详情页解析 → 结构化输出 JSON），`pipeline.py` 新增 `step5_scrape_insights()` + `run_insight_pipeline()` 独立入口，`PipelineState` 状态机扩展 `DETAIL_DONE` / `SCRAPE_INSIGHT` 决策分支，`db.py` 的 `company_insight` 表新增 18 列（phone/email/website/description/company_type/industry/registered_address/business_term/registration_authority/employee_count/scale/former_name/tags_json/products_json/top_info_json/business_info_raw_json/url）。`scraper.py` 顶层输出 22 个干净字段，新增 `phone`/`email`/`website`（从 `parse_contact_info` 接入），删除顶层 `description` 和 `business_scope`。`business_info_raw` 新增清理：`description` 在 `"... 展开"` 处截断，删除被股权结构污染的 `former_name`。`parse_top_tags` 增加 UI 排除列表，tags 只保留纳税人/企业类型标签。规范文档见 `specs/task_company_insight_integration.md`
 - 抓取结果跨轮对比，标记本次新增岗位（#88）：输出 JSON/CSV 中每条岗位新增 `is_new` 布尔字段（终端列表同步以 🆕 标记），表示「该岗位不在历史基准中」。基准自动选取规则：同关键词+同城市、**文件名日期早于本轮**的最近一份结果（同一天多轮抓取折叠为一轮，避免和几分钟前的自己 diff 出翻页抖动噪音）；找不到同关键词历史基准时全体视为新增并在终端明示；`--diff-base <path>` 可显式指定基准文件。纯本地后处理，零额外请求。（#50 反馈的「搜索结果重复」由此缓解）
 
@@ -32,6 +35,10 @@
 - 城市码表外置为 `data/city_codes.json`（全量 300+ 城市，覆盖一二三四五线），新增 `--list-cities [关键词]` 命令查看支持的城市；`resolve_city` 查询链改为「本地静态码表 → 运行时拉 BOSS 接口 → 9 位裸码兜底」。城市码表打进 wheel，`pip install` 用户也可用。（#24）
 
 ### 修复
+- 验证码/风控无感知导致「看起来卡死」（#97）：此前只有爱企查侧能识别验证页，BOSS 侧完全没有页面级检测——列表链路只靠 25s 捕获超时兜底，详情链路更会把验证页文本解析成一份几乎全空的详情写入 DB 并置 `has_detail=1`（静默污染，状态入口显示已完成却无数据）。现新增 `boss_cdp_raw.SecurityCheckError` 与 `detect_security_check_page()`（URL/标题/首屏正文三重特征，正文只匹配前 2000 字符避免页脚误报），接入 `scrape_list`（含翻页分支）、`scrape_details`、`company_detail.extractor.extract_page_text` 与 `pipeline.step3_scrape_details`。命中即中止整轮、退出码 2、打印需人工打开的 URL，已完成的进度保留、人工处理后重跑续做；不做任何绕过（见 `CONTRIBUTING.md` 合规红线）。`scrape_list` 的 `except SecurityCheckError: raise` 必须排在 `except RuntimeError` 之前，否则会被「打印一行 warning 然后当成 0 条成功」的分支吞掉。
+- 洞察 JSON 已落盘但 `has_insight` 仍为 0 时重复抓取（#97）：`step5_scrape_insights` 现在先检查同名 `aqc_{credit_code}.json` 是否存在，存在则直接补导入而不重新抓取，避免上次导入失败导致对同一批公司重复请求（上一轮就这样对 8 家公司重复抓了两遍）。单条 CLI `company_insight.scraper` 抓完即调 `import_insight_json()` 落库并置 `has_insight=1`，`credit_code` 不在当前批次时明确提示「JSON 已保存但未入库」而非静默丢弃。
+- agent 自建 `check_*.py` / `run_*.py` 脚本绕过数据访问层（#97）：根因是 `pipeline.py` 当时没有 `__main__` CLI、SKILL.md 也没有说明 `credit_code` 只存在于 `company_detail`（`company_list` 无此列），接手者只能靠 `PRAGMA table_info` 和 `SELECT *` 反复探测 schema，并自行写 INSERT 绕过 `db.import_*_from_json()`（只写入 13/30 列）。现 `.gitignore` 不再忽略 `/check_*.py` 等模式——这类文件会直接出现在 `git status` 里（原规则本身也是漏的：接手者写的 `_check_db.py` 带下划线前缀并不匹配 `/check_*.py`）。`SKILL.md` 第 0 节给出「想做的事 → 正确入口」映射表并在 B1 标注「`company_list` 没有 `credit_code` 列」。
+- `python -m scripts.company_list.pipeline` 打 runpy RuntimeWarning（#97）：`scripts/company_list/__init__.py` 原先在导入包时就 eager 导入 `pipeline`，runpy 以 `__main__` 执行它前它已在 `sys.modules` 里。现改为模块级 `__getattr__` 惰性转发（PEP 562），`from scripts.company_list import PipelineState` 等用法不变，`--step status` 输出不再带这条会误导使用者的警告。
 - 详情爬取增量同步：`pipeline.py` 的 `step3_scrape_details` 和 `_step_scrape_details` 改为每爬完一个公司立即同步到 DB（`import_detail_from_json` + `mark_detail_done`），step4 降级为兜底导入。修复进程在 step3/step4 之间中断时数据丢失问题（此前已爬详情仅存于 JSON 文件，DB 未同步，重跑造成重复抓取）。`boss_cdp_raw.py` 的 `_run_db_pipeline` 详情循环同步修复。Bug 报告见 `docs/bug_reports/detail_scrape_incremental_sync.md`。规范文档见 `specs/task_pipeline_incremental_sync.md`
 - `--url` 管道模式忽略 `--no-detail` 标志：`_run_url_pipeline` 调用 `pipe.run()` 时未传递 `args.detail`，且 `pipe.run()` 无 `detail` 参数，导致用户显式传入 `--no-detail` 后仍触发详情抓取（step3-4）。修复：`PipelineState.run()` 新增 `detail=True` 参数，`detail=False` 时跳过 step3-4 并将状态标记为 COMPLETE；`_run_url_pipeline` 传入 `args.detail`。Bug 报告见 `docs/bug_reports/pipeline_url_no_detail_ignored.md`
 - `--setup-chrome` 登录等待遇 CDP 传输层超时不再裸崩（#78）：`TimeoutError` 是 `OSError` 子类而非 `RuntimeError` 子类，`wait_for_login` 探测循环原只捕 `RuntimeError`，事件洪流冲掉命令响应时整个命令带着 traceback 退出、已写好的瞬态重试（`LOGIN_PROBE_MAX_TRANSIENT_ERRORS`）无法运行。现收敛共享元组 `CDP_TRANSIENT_EXCEPTIONS`（`(TimeoutError, websocket.WebSocketException)`），`wait_for_login` 捕获后按瞬态错误计入重试计数，`scrape_list` 外层同步补齐；同时把 `capture.enable()` 移入 `scrape_list` 的 try 块（原先位于 try 外，任何异常都会裸崩且跳过 finally 清理）。`--check` / `--smoke-test` 行为不变（原本已正确）
@@ -51,8 +58,6 @@
 - `require_runtime_dependencies` 缺失依赖时同时提示 uv 和 pip 安装方式
 - `--merge` 现在会合并旧详情并落盘到 `--detail-output`（之前只合并列表，详情丢失）
 - API URL filter 改用 `urlencode`（原字符串拼接，filter 值含特殊字符会出错）
-
-### 修复
 - pipeline.py 新增 `__main__` CLI 入口：支持 `python -m scripts.company_list.pipeline --step <list|detail|insight|all|status>` 独立运行管道步骤，避免 agent 自行编写脚本绕过 `db.import_*_from_json()` 导致字段缺失。`step5_scrape_insights` 末尾新增 `validate_insight_completeness()` 校验，发现不完整数据立即打印警告。清理 agent 遗留的垃圾脚本（`run_insight.py`、`check_credit_code.py`、`check_insight.py`）
 
 ## v2.0.0 (2026-06)

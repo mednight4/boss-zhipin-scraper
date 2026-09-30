@@ -30,6 +30,7 @@ import base64
 import os
 import re
 import hashlib
+import sqlite3
 import csv
 import glob
 import platform
@@ -44,6 +45,13 @@ from collections import Counter
 from enum import Enum
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 from urllib.request import Request, urlopen
+
+# 允许 `python scripts/boss_cdp_raw.py` 与 `python -m scripts.boss_cdp_raw` 两种入口：
+# 直接按路径执行时 sys.path[0] 是 scripts/，包内绝对导入（scripts.company_list.db）会失败，
+# 导致 --help 都跑不起来。补齐项目根到 sys.path，使两种入口行为一致。
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 websocket = None
 requests = None
@@ -63,6 +71,24 @@ def configure_console_encoding():
 
 
 configure_console_encoding()
+
+
+def enable_line_buffering():
+    """Turn on line buffering so piped/background runs stream progress live.
+
+    被 agent 当子进程调用、stdout 走管道时，Python 默认按块缓冲（Windows 8KB），
+    长任务会十几分钟看不到任何输出，看起来像卡死。行缓冲让每条 print 立即落地。
+    各 CLI 入口（pipeline / company_insight）统一调用本函数，不散落 flush=True。
+    """
+    stream = getattr(sys, "stdout", None)
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not reconfigure:
+        return
+    try:
+        reconfigure(line_buffering=True)
+    except (AttributeError, OSError, ValueError):
+        pass
+
 
 # ============================================================
 # 全局常量
@@ -1032,6 +1058,103 @@ class LoginGateError(Exception):
     """首次搜索响应判定登录/风控不可用，抓取需要终止（消息已格式化好可直接打印）。"""
 
 
+class SecurityCheckError(RuntimeError):
+    """BOSS 返回验证码/安全校验页，需人工处理，本轮抓取必须中止（不自动绕过）。
+
+    继承 RuntimeError 是为了让既有的 `except RuntimeError` 分支仍能兜住，
+    但各抓取入口都在它之前单独捕获并中止整轮，避免被「打印一行然后当作 0 条成功」
+    的分支吞掉（那正是「验证码无感知、看起来卡死」的成因）。
+    """
+
+
+# ── 验证码/安全校验页检测 ─────────────────────────────────────────
+# BOSS 反复自动化导航后会把页面重定向到 `_security_check` 验证页。此时页面不会发出
+# joblist 请求、详情页也拿不到 JD。若只靠捕获超时兜底，表现为「长时间没有任何输出」；
+# 更糟的是详情链路会把验证页文本当成详情落盘并把 has_detail 置 1（静默污染）。
+# 命中即中止整轮交人工处理，不做任何绕过（见 CONTRIBUTING.md 合规红线）。
+SECURITY_CHECK_URL_MARKERS = (
+    "_security_check",
+    "security-check",
+    "security_check",
+    "/web/user/safe",
+    "captcha",
+    "verify-slider",
+)
+SECURITY_CHECK_TITLE_MARKERS = ("安全验证", "验证", "出错了")
+SECURITY_CHECK_TEXT_MARKERS = (
+    "请完成安全验证",
+    "拖动滑块",
+    "点击进行验证",
+    "完成验证",
+    "请输入验证码",
+    "安全校验",
+    "访问过于频繁",
+    "操作过于频繁",
+    "您的环境存在异常",
+)
+
+# 一次 eval 同时取回 URL、标题与首屏正文，供验证码检测使用。
+BOSS_PAGE_STATE_JS = """
+(function(){
+    return JSON.stringify({
+        url: location.href,
+        title: document.title || '',
+        text: (document.body ? document.body.innerText : '').substring(0, 2000)
+    });
+})()
+"""
+
+
+def detect_security_check_page(page_url, page_title="", page_text=""):
+    """检测页面是否为 BOSS 验证码/安全校验页。
+
+    命中返回人类可读的原因字符串，未命中返回 None。正文只在首屏 2000 字符内匹配，
+    避免页面底部的「用户协议/联系我们」等常驻文字造成误报。
+    """
+    lowered_url = (page_url or "").lower()
+    for marker in SECURITY_CHECK_URL_MARKERS:
+        if marker in lowered_url:
+            return f"URL 命中安全校验特征「{marker}」: {page_url}"
+
+    title = (page_title or "").strip()
+    for marker in SECURITY_CHECK_TITLE_MARKERS:
+        if marker in title:
+            return f"页面标题命中安全校验特征「{marker}」: {title}"
+
+    head = (page_text or "")[:2000]
+    for marker in SECURITY_CHECK_TEXT_MARKERS:
+        if marker in head:
+            return f"页面正文命中安全校验特征「{marker}」"
+    return None
+
+
+def read_page_state(cdp, sid):
+    """读取当前页面的 {url, title, text}，解析失败返回空 dict。"""
+    val = cdp.eval_js(BOSS_PAGE_STATE_JS, sid)
+    if not isinstance(val, str):
+        return {}
+    try:
+        state = json.loads(val)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def raise_if_security_check(state, context=""):
+    """命中验证码/安全校验页就抛 SecurityCheckError（未命中直接返回）。"""
+    reason = detect_security_check_page(
+        state.get("url", ""), state.get("title", ""), state.get("text", "")
+    )
+    if not reason:
+        return
+    suffix = f"（{context}）" if context else ""
+    url = state.get("url") or ""
+    raise SecurityCheckError(
+        f"BOSS 触发验证码/安全校验，已中止本轮抓取{suffix}：{reason}\n"
+        f"   请人工在 Chrome 中打开 {url} 完成验证后重跑，程序不会自动绕过。"
+    )
+
+
 class LoginProbeStatus(Enum):
     """Outcome of one login probe request."""
 
@@ -1739,7 +1862,11 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 )
                 incr_request()
                 if data is None:
-                    # 捕获超时：页面可能被重定向到验证/登录页，交由 DOM 兜底
+                    # 捕获超时：页面可能被重定向到验证/安全校验页。先确认页面状态，
+                    # 命中就中止整轮（不再走 DOM 兜底、不再把「0 条」当成成功）。
+                    raise_if_security_check(
+                        read_page_state(cdp, sid), context=f"{keyword} @ {city_name}"
+                    )
                     log.warning("⚠️ 未捕获到页面自身的搜索响应")
                 else:
                     gate_first_response(data)
@@ -1748,6 +1875,11 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 human_scroll(cdp, sid, to_bottom=True)
                 data = capture.wait_next_response(timeout=20)
                 incr_request()
+                if data is None:
+                    raise_if_security_check(
+                        read_page_state(cdp, sid),
+                        context=f"{keyword} @ {city_name} 第 {pg} 页",
+                    )
 
             reached_end = (
                 isinstance(data, dict)
@@ -1825,6 +1957,9 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
 
     except KeyboardInterrupt:
         print("\n中断")
+    except SecurityCheckError:
+        # 验证码/安全校验页：中止整轮，不写「0 条」的成功结果（#97）
+        raise
     except CDP_TRANSIENT_EXCEPTIONS as e:
         # CDP 传输层瞬态异常：优雅停止并保留已抓数据（每页已增量写盘），不裸崩（#78）
         print(f"\n⚠️ CDP 连接异常，已停止抓取: {e}")
@@ -1922,6 +2057,17 @@ def scrape_details(list_data, max_details=None, output_path=None,
         ws.send("Page.navigate", {"url": detail_url}, sid)
         print(f"  加载页面...")
         time.sleep(random.uniform(5, 10))
+
+        # 导航后先确认没被重定向到验证码/安全校验页：否则会白滚 30s 才报「无效详情页」，
+        # 而验证码是账号级问题，继续抓下一家只会加深风控（#97）。
+        try:
+            raise_if_security_check(
+                read_page_state(ws, sid), context=f"{company} - {title}"
+            )
+        except SecurityCheckError:
+            ws.send("Target.closeTarget", {"targetId": tid})
+            ws.close()
+            raise
 
         # 模拟人类阅读详情页的滚动行为
         scroll_count = random.randint(3, 7)
@@ -2761,7 +2907,7 @@ def _run_db_pipeline(args):
         JobDatabase, build_query_url, compute_query_hash, QUERY_DIR, COMPANY_DIR
     )
     from scripts.company_detail.extractor import scrape_company_detail
-    from scripts.company_insight.scraper import scrape_aqc_by_credit_code
+    from scripts.company_insight.scraper import InsightBlockedError, scrape_aqc_by_credit_code
 
     db_path = args.db_path or None
     step = args.step
@@ -2856,7 +3002,13 @@ def _run_db_pipeline(args):
                         db.import_detail_from_json(json_path, brand_id)
                         db.mark_detail_done(brand_id)
                         detail_imported += 1
-                    except Exception as e:
+                    except SecurityCheckError:
+                        # 验证码/安全校验：中止整轮，交人工处理（#97）
+                        db.connect()
+                        db.init_schema()
+                        raise
+                    except (OSError, sqlite3.Error, json.JSONDecodeError,
+                            TypeError, ValueError, RuntimeError) as e:
                         print(f"  ❌ 失败: {e}")
                         db.connect()
                         db.init_schema()
@@ -2882,9 +3034,14 @@ def _run_db_pipeline(args):
             def _scrape_insight(credit_code):
                 return scrape_aqc_by_credit_code(credit_code, cdp_port=args.cdp_port)
 
-            insight_imported = step5_scrape_insights(db, _scrape_insight, INSIGHT_DIR)
+            try:
+                insight_imported = step5_scrape_insights(db, _scrape_insight, INSIGHT_DIR)
+            except InsightBlockedError as e:
+                # 爱企查验证码：中止整轮，退出码 2，交人工处理（#97）
+                print(f"\n🛑 {e}")
+                print("   已中止本轮洞察抓取；人工完成验证后重跑同一命令即可续做。")
+                sys.exit(2)
             print(f"洞察抓取: {insight_imported} 个公司")
-
             insight_fallback = step6_import_insights(db, insight_json_dir=INSIGHT_DIR)
             print(f"兜底导入: {insight_fallback} 个公司洞察 JSON")
 
@@ -2903,6 +3060,20 @@ def _run_db_pipeline(args):
 # main
 # ============================================================
 def main():
+    """CLI 入口。
+
+    把验证码/安全校验统一转成非 0 退出码（#97）。pyproject 的 `boss-scraper`
+    入口直接指向本函数，因此守卫必须放在这里，不能只放在 `__main__` 块里。
+    """
+    try:
+        _main()
+    except SecurityCheckError as e:
+        print(f"\n🛑 {e}")
+        print("   已中止本轮；人工完成验证后重跑同一命令即可续做。")
+        sys.exit(2)
+
+
+def _main():
     # Windows 控制台默认 GBK 无法编码输出中的 emoji/部分中文，会直接 UnicodeEncodeError
     # （实测 73 个单测中 8 个因此失败）。统一重配为 UTF-8，输出用 errors=replace 兜底。
     configure_console_encoding()

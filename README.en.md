@@ -1,4 +1,4 @@
-# BOSS Zhipin Scraper · Job Crawler v2.3 (Chrome/Edge CDP / Plaintext Salary)
+# BOSS Zhipin Scraper · Job Crawler v2.4 (Chrome/Edge CDP / Plaintext Salary)
 
 > 🌐 中文文档：[README.md](./README.md)
 
@@ -275,16 +275,22 @@ boss-zhipin-scraper/
 │   │   ├── __init__.py
 │   │   ├── db.py
 │   │   └── pipeline.py
-│   └── company_insight/  # Qichacha insight sub-package (reserved)
+│   └── company_insight/  # Aiqicha insight sub-package
+│       ├── __init__.py
+│       └── scraper.py    # Aiqicha business-info scraper (CDP self-crawler)
 └── tests/
-    ├── chrome_setup/     # City code regression tests
+    ├── chrome_setup/     # City code regression + CAPTCHA detection tests
     │   ├── __init__.py
     │   └── test_chrome_setup.py
     ├── company_detail/   # Company detail tests
     │   ├── __init__.py
     │   └── test_extractor.py
-    └── company_list/     # JobDatabase unit tests
-        └── test_db.py
+    ├── company_insight/  # Insight scraper tests (CAPTCHA / naming / import)
+    │   ├── __init__.py
+    │   └── test_scraper.py
+    └── company_list/     # JobDatabase + pipeline status tests
+        ├── test_db.py
+        └── test_pipeline.py
 ```
 
 ## Company Detail Extraction
@@ -313,6 +319,49 @@ company = scrape_company_detail("https://www.zhipin.com/gongsi/abc123.html")
 basic = parse_basic_info(page_text)
 jobs = parse_hot_jobs(page_text)
 ```
+
+## Pipeline CLI and Status Inspection
+
+The staged pipeline (list → details → Qichacha insight) has standalone CLI entry points. **You never need to write your own script to touch the database:**
+
+```bash
+# See where the pipeline currently stands (recommended first entry point)
+python3 -m scripts.company_list.pipeline --step status
+
+# Scrape details in bulk (long task — add -u so progress streams live)
+python3 -u -m scripts.company_list.pipeline --step detail
+
+# Scrape Aiqicha insights in bulk
+python3 -u -m scripts.company_list.pipeline --step insight
+
+# Look up a single company's registration info (imported into the DB automatically)
+python3 -m scripts.company_insight.scraper 91310104MA1FR5RY3N
+```
+
+`--step status` prints six sections answering "which companies were scraped / is there data / when was it scraped / does it need re-scraping":
+
+| Section | Contents |
+|---------|----------|
+| `[1] Query batches` | Which searches ran: keyword/city/job count/earliest insert time |
+| `[2] Overall progress` | Job count, unique company count, done/pending counts for details and insights |
+| `[3] Pending details` | brand_ids with `has_detail=0` |
+| `[4] Pending insights` | Companies with `has_insight=0` plus their `credit_code`; those missing a `credit_code` are listed separately with the reason |
+| `[5] Insight JSON reconciliation` | Canonical / orphan / legacy-named / unparsable / duplicate `credit_code`, with actual file names |
+| `[6] Recently imported insights` | Insert time of the latest 5 companies, for judging data freshness |
+
+Insight JSON is always written to `output/insight/aqc_{credit_code}.json`; the CLI and the pipeline share that naming.
+
+### When a CAPTCHA / risk-control page appears
+
+Both BOSS and Aiqicha may redirect the page to a CAPTCHA. The program detects this and **aborts the whole run**, exiting with code `2` and printing the URL a human needs to open:
+
+```
+🛑 BOSS 触发验证码/安全校验，已中止本轮抓取（Java @ 上海）：URL 命中安全校验特征「_security_check」: ...
+   请人工在 Chrome 中打开 ... 完成验证后重跑，程序不会自动绕过。
+   已中止本轮；人工完成验证后重跑同一命令即可续做。
+```
+
+Everything completed so far is already in the database, so after you clear the challenge in the browser, re-running the same command resumes automatically. The program never attempts fingerprint spoofing, proxy rotation, or CAPTCHA solving (see the compliance rules in `CONTRIBUTING.md`).
 
 ## How It Works
 

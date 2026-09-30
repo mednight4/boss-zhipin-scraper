@@ -43,14 +43,14 @@ docs/                     # 本地产物 (.gitignore)，bug 报告、spike 脚�
 4. **README 双语同步**：`README.md`（中文）和 `README.en.md`（英文）必须保持一致，改了其中一个就要同步另一个。
 5. **commit message 用 Conventional Commits**（`feat:` / `fix:` / `docs:` / `optimize:` / `refactor:` 等，见 `CONTRIBUTING.md`）。
 6. **动抓取链路必须真机验证**：凡改列表抓取、登录探测、详情链路的 PR，合并前要在真机过一遍 `--check` → `--smoke` → `--pages 2 --no-detail`（Chrome 需已启动且已登录）。全 mock 单测覆盖不到浏览器的焦点、定时器节流、SPA 行为和风控——焦点仿真 bug 曾 96 个单测全绿而真机翻页静默失败。一次性验证脚本（spike）放 `/tmp`，不进仓库。
-7. **合规红线**：只做被动捕获（Network 域旁听页面自身请求）和请求节奏控制。**禁止**主动伪装类手段：指纹伪造、验证码绕过、代理池轮换。遇到 `_security_check` 验证页时提示用户人工处理，不自动绕过。
+7. **合规红线**：只做被动捕获（Network 域旁听页面自身请求）和请求节奏控制。**禁止**主动伪装类手段：指纹伪造、验证码绕过、代理池轮换。遇到验证页时程序已主动检测并中止整轮（BOSS 侧 `SecurityCheckError`，爱企查侧 `InsightBlockedError`，均以退出码 2 结束并打印需人工打开的 URL），交用户人工处理，不自动绕过。
 
 ## 架构关键点（容易踩坑）
 
 - `scripts/boss_cdp_raw.py` 是一个**长单文件**，包含：`CDPSession` 类（WebSocket 连 CDP，含事件缓冲 `events` / `drain_events`）、`NetworkJoblistCapture`（列表被动捕获）、`scrape_list`（列表抓取）、`scrape_details`（详情抓取）、`main`（argparse）。城市码表外置到 `data/city_codes.json`，`resolve_city` 查询链为「本地静态码表 → 运行时拉 BOSS 接口 → 原样兜底」。
 - **列表页 vs 详情页路径完全不同**：列表页导航真实搜索页，通过 CDP `Network` 域**被动捕获页面自身发出的 joblist 响应**（不注入任何请求，背景见 `NetworkJoblistCapture` 头部注释）；翻页靠滚动触发页面自身的无限滚动加载。详情页通过新开 tab → `Page.navigate` → 注入 JS 提取。改其中一条路径时，另一条不受影响。
 - **is_new 跨轮对比**（#88）：`scrape_list` 输出的每条岗位带 `is_new` 布尔（终端列表同步 🆕 标记），纯本地后处理、零额外请求，不碰抓取链路。基准自动选取（`find_diff_base`）：同 keyword+city、文件名时间戳早于本轮的最近一份 JSON 结果——时间从 `boss_jobs_YYYYMMDD_HHMM.json` 文件名解析（`parse_result_file_time`），不用 mtime（文件复制会改 mtime）；同一天多轮抓取折叠为一轮，不和几分钟前的自己 diff 出翻页抖动噪音（#50 的「搜索结果重复」由此缓解）。无历史基准时全体 `is_new=true` 并终端明示；`--diff-base` 显式指定优先。`load_base_ids` 读基准文件已见 job_id 集合做比对。
-- **BOSS 页面行为事实**（2026-08 实测，写代码前先知道）：搜索页无翻页控件、纯无限滚动，URL 带 `&page=N` 直跳无效（SPA 始终请求第 1 页）；页面自身请求是 POST + form body（URL 只有时间戳）；每页 15 条，`zpData.hasMore` 判断是否最后一页；反复自动化导航可能触发 `_security_check` 验证页。
+- **BOSS 页面行为事实**（2026-08 实测，写代码前先知道）：搜索页无翻页控件、纯无限滚动，URL 带 `&page=N` 直跳无效（SPA 始终请求第 1 页）；页面自身请求是 POST + form body（URL 只有时间戳）；每页 15 条，`zpData.hasMore` 判断是否最后一页；反复自动化导航可能触发 `_security_check` 验证页——已由 `detect_security_check_page()` + `SecurityCheckError` 主动检测并中止整轮（列表/详情/公司详情/`--step detail` 四条链路都接入），不要绕过、不要重试、不要换 IP。
 - **CDP target 焦点/可见性不变量**：统一通过 `create_page_session` 创建页面；自动化 target 默认后台打开并注册 visibility override + **焦点仿真**（`Emulation.setFocusEmulationEnabled`），两者都不可省——后台页真实的 `hidden/hasFocus=false` 状态会让无限滚动加载静默失效（实测 JS override 单独不生效，焦点仿真才解决），同时避免抢用户前台焦点（issue #18/#29）。只有需要用户操作的 `wait_for_login` 显式传 `background=False`。不要绕过 helper 直接新增 `Target.createTarget`。
 - 同一个 Chrome 实例的默认 browser context 下，新开 target **本就共享 cookies**，不要被「新 tab 丢 cookie」的直觉误导。
 - `require_runtime_dependencies("requests", "websocket")` 在多个入口前置检查依赖，缺了会提示安装。

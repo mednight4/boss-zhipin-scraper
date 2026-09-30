@@ -13,7 +13,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.boss_cdp_raw import CDPSession, create_page_session  # noqa: E402
+from scripts.boss_cdp_raw import (  # noqa: E402
+    CDPSession,
+    SecurityCheckError,
+    create_page_session,
+    detect_security_check_page,
+    read_page_state,
+)
 
 COMPANY_URL = "https://www.zhipin.com/gongsi/EXAMPLE_PLACEHOLDER.html"
 OUTPUT_DIR = PROJECT_ROOT / "data"
@@ -51,9 +57,17 @@ def _human_mouse_jitter(ws, sid):
 
 # ── 文本提取 ────────────────────────────────────────────────────────
 def extract_page_text(ws, sid, url: str, scroll_rounds: int = 8) -> dict:
-    """导航到 URL 并提取 innerText。"""
+    """导航到 URL 并提取 innerText。
+
+    Raises:
+        SecurityCheckError: 页面被重定向到验证码/安全校验页，需人工处理
+    """
     ws.send("Page.navigate", {"url": url}, sid)
     time.sleep(random.uniform(5, 8))
+
+    # 导航后立刻确认页面状态：验证页同样是「一段可解析的文本」，不先拦下来就会
+    # 被 parse_* 解析成一份几乎全空的详情并置 has_detail=1（静默污染）。
+    _raise_if_security_check(ws, sid, url)
 
     _human_scroll(ws, sid)
     _human_mouse_jitter(ws, sid)
@@ -74,6 +88,21 @@ def extract_page_text(ws, sid, url: str, scroll_rounds: int = 8) -> dict:
     """
     val = ws.eval_js(js, sid)
     return json.loads(val) if isinstance(val, str) else {}
+
+
+def _raise_if_security_check(ws, sid, fallback_url: str):
+    """读取当前页面状态，命中验证码/安全校验页就抛 SecurityCheckError。"""
+    state = read_page_state(ws, sid)
+    reason = detect_security_check_page(
+        state.get("url") or fallback_url, state.get("title", ""), state.get("text", "")
+    )
+    if not reason:
+        return
+    raise SecurityCheckError(
+        f"BOSS 触发验证码/安全校验，已中止本轮详情抓取：{reason}\n"
+        f"   请人工在 Chrome 中打开 {state.get('url') or fallback_url} "
+        f"完成验证后重跑，程序不会自动绕过。"
+    )
 
 
 # ── 文本解析 ────────────────────────────────────────────────────────
@@ -467,6 +496,7 @@ def scrape_company_detail(url: str = COMPANY_URL, cdp_port: int = CDP_PORT, dela
     """
     ws = CDPSession(cdp_port)
     tid, sid = create_page_session(ws, background=True)
+    blocked = False
 
     try:
         raw = extract_page_text(ws, sid, url)
@@ -499,17 +529,30 @@ def scrape_company_detail(url: str = COMPANY_URL, cdp_port: int = CDP_PORT, dela
         result["brand_id"] = m.group(1) if m else ""
 
         return result
+    except SecurityCheckError:
+        # 验证码中止整轮，不再按节奏等待（等待只会加深风控）
+        blocked = True
+        raise
     finally:
         ws.send("Target.closeTarget", {"targetId": tid})
         ws.close()
         # 公司间随机延迟，对齐 boss_cdp_raw.py 详情链路的 10-25s 节奏
-        if delay > 0:
+        if delay > 0 and not blocked:
             gap = random.uniform(max(delay - 5, 5), delay + 5)
-            print(f"  等待 {gap:.0f}s 后抓下一个...\n")
+            print(f"  等待 {gap:.0f}s 后抓下一个...\n", flush=True)
             time.sleep(gap)
 
 
 def main():
+    try:
+        _main()
+    except SecurityCheckError as e:
+        print(f"\n🛑 {e}", flush=True)
+        print("   已中止本轮；人工完成验证后重跑同一命令即可续做。", flush=True)
+        sys.exit(2)
+
+
+def _main():
     url = sys.argv[1] if len(sys.argv) > 1 else COMPANY_URL
     data = scrape_company_detail(url)
 

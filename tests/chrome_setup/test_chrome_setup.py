@@ -2038,5 +2038,175 @@ class IsNewDiffTests(unittest.TestCase):
             self.assertEqual(module.load_base_ids(os.path.join(tmp, "nope.json")), set())
 
 
+class SecurityCheckDetectionTests(unittest.TestCase):
+    """BOSS 验证码/安全校验页识别（#97）。
+
+    背景：验证页同样是一段可解析的文本。不先拦下来，详情链路会把它当成详情落盘并
+    置 has_detail=1（静默污染）；列表链路则只靠捕获超时兜底，表现为「卡住没输出」。
+    """
+
+    def test_security_check_url_is_detected(self):
+        module = load_module()
+        reason = module.detect_security_check_page(
+            "https://www.zhipin.com/web/common/security-check.html?seed=abc&callbackUrl=x"
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("URL", reason)
+
+    def test_verify_slider_url_is_detected(self):
+        module = load_module()
+        self.assertIsNotNone(
+            module.detect_security_check_page(
+                "https://www.zhipin.com/web/user/safe/verify-slider?code=1"
+            )
+        )
+
+    def test_captcha_url_is_detected(self):
+        module = load_module()
+        self.assertIsNotNone(
+            module.detect_security_check_page("https://www.zhipin.com/captcha/index")
+        )
+
+    def test_verify_title_is_detected(self):
+        module = load_module()
+        reason = module.detect_security_check_page(
+            "https://www.zhipin.com/web/geek/jobs", "安全验证"
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("标题", reason)
+
+    def test_slider_text_is_detected(self):
+        module = load_module()
+        reason = module.detect_security_check_page(
+            "https://www.zhipin.com/web/geek/jobs",
+            "BOSS直聘",
+            "请完成安全验证\n拖动滑块完成拼图",
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("正文", reason)
+
+    def test_frequent_access_text_is_detected(self):
+        module = load_module()
+        self.assertIsNotNone(
+            module.detect_security_check_page("", "", "访问过于频繁，请稍后再试")
+        )
+
+    def test_normal_job_page_is_not_flagged(self):
+        """正常职位/公司页必须不误报，否则会把整轮抓取误中止。"""
+        module = load_module()
+        self.assertIsNone(
+            module.detect_security_check_page(
+                "https://www.zhipin.com/job_detail/abc123.html",
+                "【上海 高级Java工程师招聘】-BOSS直聘",
+                "职位描述 岗位职责：负责后端服务开发 任职要求：3-5年经验 公司简介 某科技公司",
+            )
+        )
+        self.assertIsNone(
+            module.detect_security_check_page(
+                "https://www.zhipin.com/gongsi/abc123.html",
+                "某科技有限公司 - BOSS直聘",
+                "在招职位 公司简介 工商信息 统一社会信用代码：91310104MA1FR5RY3N",
+            )
+        )
+
+    def test_marker_below_first_screen_is_ignored(self):
+        """正文只在首屏 2000 字符内匹配，避免页脚常驻文字造成误报。"""
+        module = load_module()
+        padded = "正常内容" * 600  # 2400 字符，把标记挤出首屏
+        self.assertIsNone(
+            module.detect_security_check_page("", "", padded + "访问过于频繁")
+        )
+
+    def test_raise_if_security_check_raises_typed_error(self):
+        module = load_module()
+        state = {
+            "url": "https://www.zhipin.com/web/common/security-check.html",
+            "title": "",
+            "text": "",
+        }
+        with self.assertRaises(module.SecurityCheckError) as ctx:
+            module.raise_if_security_check(state, context="Java @ 上海")
+        message = str(ctx.exception)
+        self.assertIn("Java @ 上海", message)
+        self.assertIn("不会自动绕过", message)
+
+    def test_raise_if_security_check_passes_through_normal_page(self):
+        module = load_module()
+        module.raise_if_security_check(
+            {
+                "url": "https://www.zhipin.com/job_detail/abc.html",
+                "title": "职位详情 - BOSS直聘",
+                "text": "职位描述",
+            }
+        )
+
+    def test_security_check_error_is_runtime_error_subclass(self):
+        """既有 except RuntimeError 分支仍能兜住，但各入口都在它之前单独中止。"""
+        module = load_module()
+        self.assertTrue(issubclass(module.SecurityCheckError, RuntimeError))
+
+    def test_scrape_list_reraises_security_check_instead_of_reporting_zero(self):
+        """scrape_list 不能把验证码吞成「0 条成功」，必须向上抛 SecurityCheckError。
+
+        旧行为：捕获超时 → 打一行 warning → 打印「完成: 0 条」并正常返回，
+        调用方完全不知道是验证码，看起来就像「卡住没输出」。
+        """
+
+        module = load_module()
+
+        class FakeWS:
+            def __init__(self, *args, **kwargs):
+                self.events = []
+                self.sent = []
+
+            def send(self, method, params=None, sid=None):
+                self.sent.append((method, params or {}))
+                return {"result": {}}
+
+            def drain_events(self, duration):
+                return None
+
+            def eval_js(self, js, sid):
+                return json.dumps({
+                    "url": "https://www.zhipin.com/web/common/security-check.html?seed=x",
+                    "title": "安全验证",
+                    "text": "请完成安全验证",
+                })
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(module, "CDPSession", FakeWS), \
+                 mock.patch.object(
+                     module, "create_page_session",
+                     lambda cdp, background=True: ("tid", "sid"),
+                 ), \
+                 mock.patch.object(module, "PROBE_CAPTURE_TIMEOUT", 0.0), \
+                 mock.patch.object(module.random, "uniform", lambda *a, **k: 0.0):
+                with self.assertRaises(module.SecurityCheckError):
+                    module.scrape_list(
+                        "Java", "上海", 1, {},
+                        output_path=os.path.join(tmp, "jobs.json"),
+                    )
+
+    def test_read_page_state_tolerates_broken_json(self):
+        module = load_module()
+
+        class FakeCDP:
+            def __init__(self, value):
+                self._value = value
+
+            def eval_js(self, js, sid):
+                return self._value
+
+        self.assertEqual(module.read_page_state(FakeCDP("not json"), "sid"), {})
+        self.assertEqual(module.read_page_state(FakeCDP(None), "sid"), {})
+        self.assertEqual(module.read_page_state(FakeCDP('["a"]'), "sid"), {})
+        self.assertEqual(
+            module.read_page_state(FakeCDP('{"url":"u"}'), "sid"), {"url": "u"}
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

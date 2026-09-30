@@ -15,11 +15,76 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.boss_cdp_raw import CDPSession, create_page_session  # noqa: E402
+from scripts.boss_cdp_raw import (  # noqa: E402
+    CDPSession,
+    create_page_session,
+    enable_line_buffering,
+)
 
 SEARCH_URL_TEMPLATE = "https://aiqicha.baidu.com/s?q={credit_code}"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "insight"
 CDP_PORT = 9222
+
+
+# ── 风控/验证码检测 ───────────────────────────────────────────────
+# 命中即中止整轮并提示人工处理，不做任何绕过（见 CONTRIBUTING.md 合规红线）。
+BLOCK_URL_MARKERS = (
+    "verify", "captcha", "safecheck", "wappass", "passport.baidu.com", "security_check",
+)
+BLOCK_TITLE_MARKERS = ("验证", "出错了", "安全中心")
+BLOCK_TEXT_MARKERS = (
+    "请输入验证码",
+    "安全验证",
+    "滑动验证",
+    "拖动滑块",
+    "点击进行验证",
+    "完成验证",
+    "百度安全验证",
+    "访问过于频繁",
+    "操作过于频繁",
+    "您的访问出错了",
+)
+
+
+class InsightBlockedError(RuntimeError):
+    """爱企查返回验证码/风控页，需人工处理，本轮抓取必须中止（不可自动绕过）。"""
+
+
+def detect_block_page(page_url: str, page_title: str, page_text: str):
+    """检测页面是否为验证码/风控页。
+
+    命中返回人类可读的原因字符串，未命中返回 None。正文只在首屏范围内匹配，
+    避免页面底部的「用户协议/联系我们」等常驻文字造成误报。
+    """
+    lowered_url = (page_url or "").lower()
+    for marker in BLOCK_URL_MARKERS:
+        if marker in lowered_url:
+            return f"URL 命中风控特征「{marker}」: {page_url}"
+
+    title = (page_title or "").strip()
+    for marker in BLOCK_TITLE_MARKERS:
+        if marker in title:
+            return f"页面标题命中风控特征「{marker}」: {title}"
+
+    head = (page_text or "")[:2000]
+    for marker in BLOCK_TEXT_MARKERS:
+        if marker in head:
+            return f"页面正文命中风控特征「{marker}」"
+    return None
+
+
+def _raise_if_blocked(state: dict, credit_code: str):
+    """检查页面状态字典，命中风控就抛 InsightBlockedError。"""
+    reason = detect_block_page(
+        state.get("url", ""), state.get("title", ""), state.get("text", "")
+    )
+    if not reason:
+        return
+    raise InsightBlockedError(
+        f"爱企查触发验证码/风控，已中止本轮抓取（credit_code={credit_code}）：{reason}\n"
+        f"   请人工在 Chrome 中打开 {state.get('url') or SEARCH_URL_TEMPLATE.format(credit_code=credit_code)} "
+        f"完成验证后重跑，程序不会自动绕过。"
+    )
 
 
 # ── 文本工具 ─────────────────────────────────────────────────────
@@ -69,6 +134,43 @@ def _human_mouse_jitter(ws, sid):
 
 
 # ── 页面交互 ─────────────────────────────────────────────────────
+# 一次 eval 同时取回公司 ID、URL、标题和首屏正文，用于「找 ID + 判风控」两件事，
+# 避免为了检测验证码多开一次往返。
+SEARCH_STATE_JS = """
+(function() {
+    var card = document.querySelector('a.card[data-log-title]');
+    if (!card) {
+        card = document.querySelector('[data-log-title^="item-"]');
+    }
+    var companyId = '';
+    if (card) {
+        var title = card.getAttribute('data-log-title') || '';
+        var m = title.match(/item-(\\d+)/);
+        if (m) companyId = m[1];
+    }
+    var body = document.body ? document.body.innerText : '';
+    return JSON.stringify({
+        company_id: companyId,
+        url: location.href,
+        title: document.title || '',
+        text: body.substring(0, 3000)
+    });
+})()
+"""
+
+
+def _read_page_state(ws, sid) -> dict:
+    """读取当前页面的 {company_id, url, title, text}，解析失败返回空 dict。"""
+    val = ws.eval_js(SEARCH_STATE_JS, sid)
+    if not isinstance(val, str):
+        return {}
+    try:
+        state = json.loads(val)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
 def navigate_and_click_company(ws, sid, credit_code, timeout=15):
     """导航到爱企查搜索页，提取公司 ID，直接跳转详情页。
 
@@ -83,36 +185,29 @@ def navigate_and_click_company(ws, sid, credit_code, timeout=15):
 
     Returns:
         str: 详情页的 URL
+
+    Raises:
+        InsightBlockedError: 页面是验证码/风控页，需人工处理
+        RuntimeError: 未找到公司 ID（页面结构变化等）
     """
     search_url = SEARCH_URL_TEMPLATE.format(credit_code=credit_code)
     ws.send("Page.navigate", {"url": search_url}, sid)
     time.sleep(random.uniform(5, 8))
 
-    # 从搜索结果中提取公司 ID
-    extract_id_js = """
-    (function() {
-        var card = document.querySelector('a.card[data-log-title]');
-        if (!card) {
-            // 回退：找任何带 data-log-title 的链接
-            card = document.querySelector('[data-log-title^="item-"]');
-        }
-        if (card) {
-            var title = card.getAttribute('data-log-title');
-            var m = title.match(/item-(\\d+)/);
-            if (m) return m[1];
-        }
-        return '';
-    })()
-    """
-    company_id = ws.eval_js(extract_id_js, sid)
+    state = _read_page_state(ws, sid)
+    _raise_if_blocked(state, credit_code)
+    company_id = state.get("company_id", "")
+
     if not company_id:
         time.sleep(3)
-        company_id = ws.eval_js(extract_id_js, sid)
+        state = _read_page_state(ws, sid)
+        _raise_if_blocked(state, credit_code)
+        company_id = state.get("company_id", "")
 
     if not company_id:
         raise RuntimeError(
-            "未找到公司 ID (credit_code={})，"
-            "可能需要人工处理验证码或页面结构已变化".format(credit_code)
+            "未找到公司 ID (credit_code={})，页面结构可能已变化；"
+            "当前页面: {}".format(credit_code, state.get("url", search_url))
         )
 
     # 直接导航到详情页
@@ -564,9 +659,10 @@ def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT, delay:
     """
     ws = CDPSession(cdp_port)
     tid, sid = create_page_session(ws, background=True)
+    blocked = False
 
     try:
-        # 1. 导航搜索页 + 点击公司链接
+        # 1. 导航搜索页 + 点击公司链接（内部已检测风控页）
         navigate_and_click_company(ws, sid, credit_code)
 
         # 2. 提取详情页文本（带仿人工滚动/鼠标抖动）
@@ -577,6 +673,11 @@ def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT, delay:
 
         if not text:
             raise RuntimeError(f"详情页文本提取为空 (credit_code={credit_code})")
+
+        # 2b. 详情页也可能直接落到风控页（搜索页正常但详情页被拦）
+        _raise_if_blocked(
+            {"url": page_url, "title": page_title, "text": text}, credit_code
+        )
 
         # 3. 解析字段
         business = parse_aqc_business_info(text)
@@ -621,21 +722,99 @@ def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT, delay:
 
         return result
 
+    except InsightBlockedError:
+        # 风控中止整轮，不再按节奏等待（等待只会加深风控）
+        blocked = True
+        raise
+
     finally:
         ws.send("Target.closeTarget", {"targetId": tid})
         ws.close()
-        # 公司间随机延迟，仿真人工操作节奏，降低风控触发风险
-        gap = random.uniform(max(delay - 5, 5), delay + 5)
-        print(f"  等待 {gap:.0f}s 后抓下一个...\n")
-        time.sleep(gap)
+        if not blocked:
+            # 公司间随机延迟，仿真人工操作节奏，降低风控触发风险
+            gap = random.uniform(max(delay - 5, 5), delay + 5)
+            print(f"  等待 {gap:.0f}s 后抓下一个...\n", flush=True)
+            time.sleep(gap)
+
+
+# ── JSON 落盘与入库 ──────────────────────────────────────────────
+def insight_json_path(credit_code: str, output_dir=None) -> Path:
+    """洞察 JSON 的统一落盘路径。
+
+    CLI 与 pipeline.step5/step6 共用同一命名，避免出现
+    `{credit_code}.json` / `{brand_id}.json` / `aqc_{credit_code}.json`
+    三种命名并存、谁也不知道哪家抓过的状态漂移。
+
+    Args:
+        credit_code: 统一社会信用代码
+        output_dir: 覆盖默认输出目录（pipeline 传 insight_json_dir 时用）
+    """
+    base = Path(output_dir) if output_dir else OUTPUT_DIR
+    return base / f"aqc_{credit_code}.json"
+
+
+def save_insight_json(data: dict, credit_code: str) -> Path:
+    """把抓取结果写到统一路径，返回落盘路径。"""
+    out_path = insight_json_path(credit_code)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return out_path
+
+
+def import_insight_json(json_path, credit_code, db=None) -> bool:
+    """把洞察 JSON 导入 company_insight 并置 has_insight=1。
+
+    单条 CLI 与 pipeline 共用，保证「抓完就有 DB 记录」，不会出现
+    JSON 已落盘但 DB 仍是 has_insight=0、下一轮重复抓取的情况。
+
+    Args:
+        json_path: 洞察 JSON 路径
+        credit_code: 统一社会信用代码（用于反查 brand_id）
+        db: 可选 JobDatabase 实例（测试注入用）。为 None 时自建并负责关闭。
+
+    Returns:
+        bool: True 表示已入库；False 表示该 credit_code 不在当前批次内（仅存 JSON）。
+    """
+    from scripts.company_list.db import JobDatabase
+
+    owned_db = db is None
+    if owned_db:
+        db = JobDatabase()
+        db.connect()
+        db.init_schema()
+    try:
+        brand_id = db.resolve_brand_id_by_credit_code(credit_code)
+        if not brand_id:
+            print(
+                f"⚠️  DB 中未找到 credit_code={credit_code} 对应的公司，JSON 已保存但未入库。\n"
+                f"    该代码可能不在当前抓取批次内；如需入库请先跑列表+详情管道。",
+                flush=True,
+            )
+            return False
+        db.import_insight_from_json(str(json_path), brand_id)
+        db.mark_insight_done(brand_id)
+        print(f"✅ 已入库 company_insight 并置 has_insight=1: {brand_id}", flush=True)
+        return True
+    finally:
+        if owned_db:
+            db.close()
 
 
 # ── CLI 入口 ─────────────────────────────────────────────────────
 def main():
-    """CLI 入口: uv run python3 scripts/company_insight/scraper.py <credit_code> [--port 9222]"""
+    """CLI 入口: python -m scripts.company_insight.scraper <credit_code> [--port 9222] [--delay 15]
+
+    抓完即落盘到 output/insight/aqc_{credit_code}.json 并尝试入库 company_insight，
+    因此可以安全地重复执行：已抓过的公司会覆盖同名 JSON 并刷新 has_insight。
+    """
+    enable_line_buffering()
+
     if len(sys.argv) < 2:
-        print("用法: python3 scripts/company_insight/scraper.py <统一社会信用代码> [--port 9222]")
-        print("示例: python3 scripts/company_insight/scraper.py 91310104MA1FR5RY3N")
+        print("用法: python -m scripts.company_insight.scraper <统一社会信用代码> [--port 9222] [--delay 15]")
+        print("示例: python -m scripts.company_insight.scraper 91310104MA1FR5RY3N")
+        print("提示: 批量抓取请用 python -m scripts.company_list.pipeline --step insight")
         sys.exit(1)
 
     credit_code = sys.argv[1].strip()
@@ -654,18 +833,17 @@ def main():
         if idx + 1 < len(sys.argv):
             delay = float(sys.argv[idx + 1])
 
-    print(f"正在抓取爱企查: credit_code={credit_code}, port={cdp_port}, delay={delay}s")
-    data = scrape_aqc_by_credit_code(credit_code, cdp_port, delay=delay)
+    print(f"正在抓取爱企查: credit_code={credit_code}, port={cdp_port}, delay={delay}s", flush=True)
+    try:
+        data = scrape_aqc_by_credit_code(credit_code, cdp_port, delay=delay)
+    except InsightBlockedError as e:
+        print(f"\n🛑 {e}", flush=True)
+        sys.exit(2)
 
-    # 输出到文件
-    out_path = OUTPUT_DIR / f"{credit_code}.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    print(f"\nSaved: {out_path}")
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    out_path = save_insight_json(data, credit_code)
+    print(f"\nSaved: {out_path}", flush=True)
+    import_insight_json(out_path, credit_code)
+    print(json.dumps(data, ensure_ascii=False, indent=2), flush=True)
 
 
 if __name__ == "__main__":
