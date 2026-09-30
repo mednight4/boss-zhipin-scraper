@@ -1,4 +1,4 @@
-"""分阶段管道编排 — 列表爬取 → DB 导入 → 详情爬取 → DB 导入."""
+"""分阶段管道编排 — 列表爬取 → DB 导入 → 详情爬取 → DB 导入 → 洞察爬取 → DB 导入."""
 
 import json
 import os
@@ -89,7 +89,7 @@ def step4_import_details(db, json_paths=None, detail_json_dir=None):
 
 
 def step5_scrape_insights(db, scrape_insight_fn, insight_json_dir=None, delay_range=(15, 25)):
-    """Step 5: 扫描 DB 中待跑洞察的公司 → 企查查抓取 → 保存 JSON → 导入 DB.
+    """Step 5: 扫描 DB 中待跑洞察的公司 → 企查查抓取 → 保存 JSON → 导入 DB → 更新 has_insight.
 
     Args:
         db: JobDatabase 实例
@@ -136,6 +136,46 @@ def step5_scrape_insights(db, scrape_insight_fn, insight_json_dir=None, delay_ra
     return imported
 
 
+def step6_import_insights(db, json_paths=None, insight_json_dir=None):
+    """Step 6: 兜底导入残留的洞察 JSON → company_insight → 更新 has_insight.
+
+    与 step4_import_details 对称, 用于兼容旧数据/中断恢复.
+    扫描 insight_json_dir 下所有 aqc_*.json, 从文件名解析 credit_code,
+    查找对应的 brand_id 进行导入.
+
+    Args:
+        db: JobDatabase 实例
+        json_paths: 显式指定 [(json_path, brand_id)] 列表
+        insight_json_dir: JSON 输出目录
+
+    Returns:
+        int: 导入的公司数
+    """
+    if json_paths is None:
+        if insight_json_dir is None:
+            insight_json_dir = INSIGHT_DIR
+        if not os.path.isdir(insight_json_dir):
+            return 0
+        json_paths = []
+        for fp in glob.glob(os.path.join(insight_json_dir, "aqc_*.json")):
+            filename = os.path.basename(fp)
+            # 文件名格式: aqc_{credit_code}.json
+            credit_code = filename.replace("aqc_", "").replace(".json", "")
+            # 通过 credit_code 反查 brand_id
+            brand_id = db.resolve_brand_id_by_credit_code(credit_code)
+            if brand_id:
+                json_paths.append((fp, brand_id))
+
+    imported = 0
+    for json_path, brand_id in json_paths:
+        if not os.path.exists(json_path):
+            continue
+        db.import_insight_from_json(json_path, brand_id)
+        db.mark_insight_done(brand_id)
+        imported += 1
+    return imported
+
+
 def run_full_pipeline(keyword, city_code, filters, scrape_list_fn, scrape_detail_fn, scrape_insight_fn=None):
     """完整管道: step1 → step2 → step3 → step4 → step5(可选)."""
     db = JobDatabase()
@@ -164,6 +204,10 @@ def run_full_pipeline(keyword, city_code, filters, scrape_list_fn, scrape_detail
             print("=== Step 5: 企查查洞察 ===")
             insight_imported = step5_scrape_insights(db, scrape_insight_fn)
             print(f"洞察抓取: {insight_imported} 个公司")
+
+            print("=== Step 6: 兜底导入残留洞察 JSON ===")
+            insight_fallback = step6_import_insights(db)
+            print(f"兜底导入: {insight_fallback} 个公司")
 
         stats = db.get_stats()
         print(f"\n统计: {stats['total_jobs']} 职位, {stats['unique_companies']} 公司, "
@@ -229,14 +273,19 @@ class PipelineState:
                 self.step = "LIST_JSON_SAVED"
             else:
                 self.step = "IDLE"
-        elif info["detail_pending"] == 0:
-            # 详情全部完成, 检查洞察进度
-            if info.get("insight_pending", 0) and info["insight_pending"] > 0:
+        else:
+            detail_pending = info.get("detail_pending", 0) or 0
+            insight_pending = info.get("insight_pending", 0) or 0
+
+            if detail_pending > 0:
+                # 还有详情未爬完
+                self.step = "LIST_DB_IMPORTED"
+            elif insight_pending > 0:
+                # 详情全部完成，还有洞察待爬
                 self.step = "DETAIL_DONE"
             else:
+                # 详情 + 洞察全部完成
                 self.step = "COMPLETE"
-        else:
-            self.step = "LIST_DB_IMPORTED"
 
     def decide(self) -> str:
         """决策下一步动作：SKIP / IMPORT_LIST / SCRAPE_LIST / RESUME_REFRESH / SCRAPE_INSIGHT"""
@@ -293,14 +342,17 @@ class PipelineState:
                 if self.step == "LIST_DB_IMPORTED":
                     self.step = "DETAIL_DONE"
 
-        # Step 5: 企查查洞察
+        # Step 5-6: 企查查洞察（扫描 → 爬取 → 导入 → 兜底）
         if insight and scrape_insight_fn:
-            if self.step in ("DETAIL_DONE", "COMPLETE"):
+            if self.step in ("DETAIL_DONE", "INSIGHT_DONE", "COMPLETE"):
                 self._step_scrape_insights(scrape_insight_fn)
-                self.step = "COMPLETE"
         else:
-            if self.step == "DETAIL_DONE":
-                self.step = "COMPLETE"
+            if self.step in ("DETAIL_DONE", "INSIGHT_DONE"):
+                pass  # 用户选择不跑洞察，保持当前状态
+
+        # 最终状态归一：有 INSIGHT_DONE 或 DETAIL_DONE 都视为 COMPLETE
+        if self.step in ("DETAIL_DONE", "INSIGHT_DONE"):
+            self.step = "COMPLETE"
 
         return {"action": action, "query_hash": self.query_hash, "step": self.step,
                 "stats": self.db.get_stats()}
@@ -368,9 +420,12 @@ class PipelineState:
         self.step = "DETAIL_DONE"
 
     def _step_scrape_insights(self, scrape_insight_fn):
-        """扫描待洞察公司 → 企查查抓取 → 导入 DB。"""
+        """扫描待洞察公司 → 企查查抓取 → 导入 DB → 兜底导入残留 JSON。"""
         imported = step5_scrape_insights(self.db, scrape_insight_fn, INSIGHT_DIR)
-        print(f"insight sync: {imported} companies")
+        fallback = step6_import_insights(self.db, insight_json_dir=INSIGHT_DIR)
+        total = imported + fallback
+        print(f"insight sync: {imported} (兜底+{fallback}) / {total} companies")
+        self.step = "INSIGHT_DONE"
 
 
 # ── 模块级便捷函数 ──────────────────────────────────────────────

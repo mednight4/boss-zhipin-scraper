@@ -2761,6 +2761,7 @@ def _run_db_pipeline(args):
         JobDatabase, build_query_url, compute_query_hash, QUERY_DIR, COMPANY_DIR
     )
     from scripts.company_detail.extractor import scrape_company_detail
+    from scripts.company_insight.scraper import scrape_aqc_by_credit_code
 
     db_path = args.db_path or None
     step = args.step
@@ -2874,16 +2875,26 @@ def _run_db_pipeline(args):
             print(f"导入详情: {detail_imported} (兜底+{fallback_imported}) 个公司")
 
         if step == "insight":
-            # ── Step 3: 洞察（预留） ──
+            # ── Step 3: 洞察（CDP 自爬虫抓取爱企查） ──
             print(f"\n=== Step 3: 洞察（CDP 自爬虫抓取爱企查） ===")
-            brands = db.get_pending_insight_brands()
-            print(f"待获取洞察: {len(brands)} 个公司（功能预留）")
+            from scripts.company_list.pipeline import step5_scrape_insights, step6_import_insights, INSIGHT_DIR
+
+            def _scrape_insight(credit_code):
+                return scrape_aqc_by_credit_code(credit_code, cdp_port=args.cdp_port)
+
+            insight_imported = step5_scrape_insights(db, _scrape_insight, INSIGHT_DIR)
+            print(f"洞察抓取: {insight_imported} 个公司")
+
+            insight_fallback = step6_import_insights(db, insight_json_dir=INSIGHT_DIR)
+            print(f"兜底导入: {insight_fallback} 个公司洞察 JSON")
 
         # 输出统计
         stats = db.get_stats()
         print(f"\n📊 DB 统计: {stats['total_jobs']} 职位 | {stats['unique_companies']} 公司 | "
               f"详情 {stats['done_detail']}/{stats['unique_companies']} | "
-              f"待爬详情 {stats['pending_detail']}")
+              f"待爬详情 {stats['pending_detail']} | "
+              f"洞察 {stats['done_insight']}/{stats['unique_companies']} | "
+              f"待爬洞察 {stats['pending_insight']}")
     finally:
         db.close()
 

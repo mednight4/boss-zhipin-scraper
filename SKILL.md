@@ -44,7 +44,7 @@ action = pipe.decide()
 | `SCRAPE_LIST` | 无数据，需从头抓取 | → **主线 A：数据构建** |
 | `IMPORT_LIST` | JSON 已爬但未导入 DB | → **主线 A：数据构建** |
 | `RESUME_REFRESH` | 数据已过期（>24h） | → **主线 A：数据构建** |
-| `SCRAPE_INSIGHT` | 详情已完成，洞察待抓取 | → **主线 A：数据构建（step5）** |
+| `SCRAPE_INSIGHT` | 详情和/或洞察待抓取 | → **主线 A：数据构建（step3-4 与 step5-6 可并行）** |
 
 ---
 
@@ -103,6 +103,12 @@ python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=10102010
 python3 "$SCRIPT_PATH" --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent&salary=405" --pages 3 --db --step all
 ```
 
+**并行优化**：用户选 D 时，agent 可开两个子线程分别执行，速度更快：
+- 子线程 1: `python3 "$SCRIPT_PATH" --db --step detail`（爬详情）
+- 子线程 2: `python3 "$SCRIPT_PATH" --db --step insight`（爬洞察）
+- 两者无依赖，`company_list` 已含各自需要的联立键
+```
+
 没有 URL 时用筛选参数：
 
 ```bash
@@ -121,19 +127,23 @@ python3 "$SCRIPT_PATH" \
 
 ### A3. 管道推进
 
-PipelineState 按状态机推进，自动跳过已完成步骤：
+PipelineState 按状态机推进，自动跳过已完成步骤。
+
+**并行说明**：step2 完成后 `company_list` 已含 `encrypt_brand_id`（详情联立键）和 `credit_code`（洞察联立键），detail 与洞察两条路径**无依赖**。agent 可开两个子线程分别跑 `--step detail` 和 `--step insight`，各自独立写各自的表，完成后状态归一化为 `COMPLETE`。
 
 ```
-IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → INSIGHT_DONE → COMPLETE
+IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → COMPLETE
+                                       ↘ INSIGHT_DONE ↗
 ```
 
-| 步骤 | 做什么 | 产物 | 参数流转 |
-|------|--------|------|----------|
-| step1 | 列表抓取 | `output/query/{query_hash}.json` | — |
-| step2 | JSON 导入 DB | `company_list` 表 | — |
-| step3 | 扫描 `has_detail=0` → 逐公司爬取 | `output/company/{brand_id}.json` | `encrypt_brand_id` → 详情页 |
-| step4 | 导入详情 → 更新 `has_detail=1` | `company_detail` 表 | — |
-| step5 | 扫描 `has_insight=0` → 逐公司抓取爱企查 | `output/insight/{credit_code}.json` | `credit_code` → 洞察脚本 |
+| 步骤 | 做什么 | 产物 | 参数流转 | 可并行 |
+|------|--------|------|----------|--------|
+| step1 | 列表抓取 | `output/query/{query_hash}.json` | — | — |
+| step2 | JSON 导入 DB | `company_list` 表 | — | — |
+| step3 | 扫描 `has_detail=0` → 逐公司爬取 | `output/company/{brand_id}.json` | `encrypt_brand_id` → 详情页 | ↕ 与 step5 并行 |
+| step4 | 导入详情 → 更新 `has_detail=1` | `company_detail` 表 | — | ↕ 与 step5 并行 |
+| step5 | 扫描 `has_insight=0` → 逐公司抓取爱企查 | `output/insight/{credit_code}.json` | `credit_code` → 洞察脚本 | ↕ 与 step3-4 并行 |
+| step6 | 兜底导入残留洞察 JSON | `company_insight` 表 + has_insight=1 | credit_code → brand_id 反查 | 跟随 step5 |
 
 **step5 洞察脚本说明**：
 
@@ -141,7 +151,7 @@ IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → INSIGHT_DONE �
 - CLI 用法：`python -m scripts.company_insight.scraper <credit_code> [--port 9222]`
 - 数据来源：`company_list` 中 BOSS 返回的 `credit_code`（统一社会信用代码）
 - 工作方式：复用 CDP 打开爱企查详情页 → 解析工商字段 → 结构化输出 → 入库 `company_insight`
-- 前置条件：step4 完成（详情已就绪，`credit_code` 已从 BOSS 详情中提取并存储）
+- **独立查询**：用户可直接对任意 `credit_code` 执行 `python -m scripts.company_insight.scraper <credit_code>` 做单条爱企查查询，无需先跑完整管道
 
 中断恢复：`decide()` 自动检测当前状态，`run()` 从断点继续。详见 [skill/pipeline.md](skill/pipeline.md)。
 

@@ -470,6 +470,28 @@ class JobDatabase:
         )
         self.conn.commit()
 
+    def resolve_brand_id_by_credit_code(self, credit_code):
+        """通过 credit_code 反查 company_list 中的 encrypt_brand_id.
+
+        Args:
+            credit_code: 统一社会信用代码
+
+        Returns:
+            str or None: 对应的 encrypt_brand_id, 未找到返回 None
+        """
+        self.connect()
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT DISTINCT encrypt_brand_id FROM company_list
+               WHERE encrypt_brand_id IN (
+                   SELECT brand_id FROM company_detail WHERE credit_code = ?
+               )
+               LIMIT 1""",
+            (credit_code,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
     # ── 统计 ──────────────────────────────────────────────────────
 
     def get_stats(self):

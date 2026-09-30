@@ -25,7 +25,7 @@ specs/                    # 任务规范文档 (task_*.md)，每个新特性/修
 docs/                     # 本地产物 (.gitignore)，bug 报告、spike 脚本等
 ```
 
-**重要边界：核心逻辑都放 `scripts/boss_cdp_raw.py`，不要随手新建文件**（见 `CONTRIBUTING.md`「单文件原则」）。`docs/` 被 `.gitignore` 忽略，是本地产物，不要提交。**例外**：`data/city_codes.json` 是城市码表数据（非逻辑代码），外置便于用户查看支持哪些城市；改它要同步跑 `tests.chrome_setup.test_chrome_setup` 的城市码表防回归测试。**第二例外**：`scripts/company_detail/extractor.py` 是公司详情提取的独立模块（导航公司页面 + 纯文本行解析，复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session`），与列表/详情抓取路径分离；如需扩展公司字段只改此文件。**第三例外**：`scripts/company_list/db.py` + `pipeline.py` 是 SQLite 数据访问层和分阶段管道编排（列表→DB→详情→DB→洞察），与抓取主链路解耦；如需改查询存储或管道状态机只改这两个文件。**第四例外**：`scripts/company_insight/` 是企查查洞察子包，通过 CDP 复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session` 导航爱企查详情页，抓取工商结构化信息，与列表/详情抓取路径分离；如需改洞察字段只改此文件。
+**重要边界：核心逻辑都放 `scripts/boss_cdp_raw.py`，不要随手新建文件**（见 `CONTRIBUTING.md`「单文件原则」）。`docs/` 被 `.gitignore` 忽略，是本地产物，不要提交。**例外**：`data/city_codes.json` 是城市码表数据（非逻辑代码），外置便于用户查看支持哪些城市；改它要同步跑 `tests.chrome_setup.test_chrome_setup` 的城市码表防回归测试。**第二例外**：`scripts/company_detail/extractor.py` 是公司详情提取的独立模块（导航公司页面 + 纯文本行解析，复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session`），与列表/详情抓取路径分离；如需扩展公司字段只改此文件。**第三例外**：`scripts/company_list/db.py` + `pipeline.py` 是 SQLite 数据访问层和分阶段管道编排（列表→DB→详情/洞察并行→DB），与抓取主链路解耦；如需改查询存储或管道状态机只改这两个文件。detail 和洞察在 step2 之后可并行执行（`company_list` 已含 `encrypt_brand_id` 和 `credit_code`），agent 开两个子线程分别跑 `--step detail` 和 `--step insight`。**第四例外**：`scripts/company_insight/` 是企查查洞察子包，通过 CDP 复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session` 导航爱企查详情页，抓取工商结构化信息，与列表/详情抓取路径分离；如需改洞察字段只改此文件。
 
 ## 环境与命令
 
@@ -57,9 +57,10 @@ docs/                     # 本地产物 (.gitignore)，bug 报告、spike 脚�
 - `scripts/company_detail/extractor.py` 是公司详情提取的独立模块：复用 `boss_cdp_raw.py` 的 `CDPSession` + `create_page_session` 导航 `/gongsi/{brand_id}.html`，拿到 `document.body.innerText` 后通过纯文本行解析（`parse_basic_info` / `parse_hot_jobs` / `parse_description` / `parse_products` / `parse_business_info` / `parse_work_benefits` / `parse_recruiters` / `parse_executives`）提取结构化字段。有 `scrape_company_detail(url, cdp_port, delay)` 高级 API（delay 参数控制公司间随机间隔，默认 15s±5s）、`main()` CLI 入口，以及多个可独立使用的 `parse_*` 纯文本解析函数（无需 Chrome）。
 - `scripts/company_list/db.py` 是 SQLite 三表桥接数据访问层（company_list / company_detail / company_insight），提供 `JobDatabase` 类、`build_query_url`、`compute_query_hash` 等。`pipeline.py` 是分阶段管道编排（step1_scrape_list → step2_import_list → step3_scrape_details → step4_import_details → step5_scrape_insights），含 `PipelineState` 状态机和 `run_full_pipeline()` 一键入口。状态流转：
   ```
-  IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → INSIGHT_DONE → COMPLETE
+  IDLE → LIST_JSON_SAVED → LIST_DB_IMPORTED → DETAIL_DONE → COMPLETE
+                                         ↘ INSIGHT_DONE ↗
   ```
-  其中 `DETAIL_DONE` 表示详情已抓取完成但洞察（企查查）尚未抓取。`scripts/company_insight/scraper.py` 通过 CDP 自爬虫抓取爱企查工商信息，入口为 `scrape_aqc_by_credit_code(credit_code, cdp_port)`，参数 `credit_code` 来自 `company_list` 中 BOSS 返回的统一社会信用代码，CLI 入口为 `python -m scripts.company_insight.scraper <credit_code> [--port 9222]`。step5 从 DB 扫描 `has_insight=0` 的公司 → 读取 `credit_code` → 逐家调用洞察脚本 → 导入 `company_insight` 表。
+  **detail 和洞察可并行**：step2 完成后 `company_list` 已含 `encrypt_brand_id`（详情联立键）和 `credit_code`（洞察联立键），两条路径无依赖。agent 可开两个子线程分别执行 `--step detail` 和 `--step insight`，各自独立写各自的表。`DETAIL_DONE` 和 `INSIGHT_DONE` 都到达后状态归一化为 `COMPLETE`。`scripts/company_insight/scraper.py` 通过 CDP 自爬虫抓取爱企查工商信息，入口为 `scrape_aqc_by_credit_code(credit_code, cdp_port)`，参数 `credit_code` 来自 `company_list` 中 BOSS 返回的统一社会信用代码，CLI 入口为 `python -m scripts.company_insight.scraper <credit_code> [--port 9222]`。step5 从 DB 扫描 `has_insight=0` 的公司 → 读取 `credit_code` → 逐家调用洞察脚本 → 导入 `company_insight` 表。**独立查询**：用户可直接用 `python -m scripts.company_insight.scraper <credit_code>` 对任意统一社会信用代码做单条爱企查查询，无需先跑完整管道。
 
 ## 提交流程
 
