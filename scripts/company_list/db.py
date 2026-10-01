@@ -5,7 +5,7 @@ import os
 import sqlite3
 import hashlib
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 OUTPUT_DIR = os.path.join(PACKAGE_DIR, "output")
@@ -201,21 +201,73 @@ class JobDatabase:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        if not isinstance(data, dict) or not isinstance(data.get("jobs", []), list):
+            raise ValueError("列表 JSON 必须是包含 jobs 数组的对象")
         keyword = data.get("keyword", "")
         city = data.get("city", "")
-        filters = data.get("filters", {})
+        filters = data.get("filters") or {}
+        if not isinstance(filters, dict):
+            raise ValueError("列表 JSON 的 filters 必须是对象")
         scraped_at = data.get("scraped_at", datetime.now().isoformat())
         jobs = data.get("jobs", [])
 
-        city_code = ""
-        for job in jobs:
-            loc = job.get("location", "")
-            if loc:
-                city_code = loc.split("\u00b7")[0]
-                break
+        # 新版 JSON 写入规范批次元数据。旧 JSON 走显式城市输入解析，
+        # 不再从职位 location 猜测查询城市，避免职位工作地点覆盖搜索城市。
+        city_code = str(data.get("city_code") or "").strip()
+        query_url = str(data.get("query_url") or "").strip()
+        query_hash = str(data.get("query_hash") or "").strip()
+        if query_url:
+            computed_hash = compute_query_hash(query_url)
+            if query_hash and query_hash != computed_hash:
+                raise ValueError(
+                    "列表 JSON 的 query_hash 与 query_url 不一致: "
+                    f"{query_hash} != {computed_hash}"
+                )
+            query_hash = computed_hash
+            if not city_code:
+                parsed_city = parse_qs(urlparse(query_url).query).get("city", [""])[0]
+                city_code = parsed_city
+        else:
+            if not city_code:
+                city_code = str(city or "").strip()
+            if not city_code:
+                raise ValueError("列表 JSON 缺少可恢复的 city_code/city")
+            if city_code:
+                from scripts.boss_cdp_raw import resolve_city
+                city_name, city_code = resolve_city(city_code)
+                if not city:
+                    city = city_name
+            query_url = build_query_url(keyword, city_code, filters)
+            computed_hash = compute_query_hash(query_url)
+            if query_hash and query_hash != computed_hash:
+                # 没有 URL 的旧元数据不能证明其 query_hash 来源；按可恢复的
+                # keyword/city/filters 重建批次键，避免继续写入不可复现的身份。
+                query_hash = computed_hash
+            else:
+                query_hash = computed_hash
 
-        query_url = build_query_url(keyword, city_code, filters)
+        if query_url and not city_code:
+            raise ValueError("列表 JSON 的 query_url 缺少可恢复的 city_code")
+        if city_code:
+            from scripts.boss_cdp_raw import resolve_city
+            city_name, resolved_city_code = resolve_city(city_code)
+            if query_url:
+                url_city_code = parse_qs(urlparse(query_url).query).get("city", [""])[0]
+                if url_city_code and url_city_code != resolved_city_code:
+                    raise ValueError(
+                        "列表 JSON 的 city_code 与 query_url 不一致: "
+                        f"{resolved_city_code} != {url_city_code}"
+                    )
+            city_code = resolved_city_code
+            if not city:
+                city = city_name
+
+        canonical_url = build_query_url(keyword, city_code, filters)
+        if query_url and query_url != canonical_url:
+            raise ValueError("列表 JSON 的 query_url 与 keyword/city_code/filters 不一致")
+        query_url = canonical_url
         query_hash = compute_query_hash(query_url)
+
         now = datetime.now().isoformat()
 
         inserted = 0
@@ -270,15 +322,22 @@ class JobDatabase:
     # ── Detail 查询/导入 ──────────────────────────────────────────
 
     def get_pending_detail_brands(self):
-        """查询 has_detail=0 的唯一 brand 列表（按 encrypt_brand_id 去重）."""
+        """查询详情未闭环的 brand 列表，按 encrypt_brand_id 去重。
+
+        列表状态未完成或缺少对应 company_detail 行都会保留为待办。
+        """
         self.connect()
         cur = self.conn.cursor()
         cur.execute(
             """SELECT MIN(id) as id, encrypt_brand_id, MIN(company_link) as company_link,
                       MIN(boss_name) as boss_name
-               FROM company_list
-               WHERE has_detail = 0 AND encrypt_brand_id != ''
-               GROUP BY encrypt_brand_id
+               FROM company_list cl
+               WHERE cl.encrypt_brand_id != ''
+                 AND (cl.has_detail = 0 OR NOT EXISTS (
+                     SELECT 1 FROM company_detail cd
+                     WHERE cd.brand_id = cl.encrypt_brand_id
+                 ))
+               GROUP BY cl.encrypt_brand_id
                ORDER BY MIN(id)"""
         )
         return [dict(r) for r in cur.fetchall()]
@@ -387,18 +446,21 @@ class JobDatabase:
     # ── Insight 查询/导入（预留） ─────────────────────────────────
 
     def get_pending_insight_brands(self):
-        """查询 has_insight=0 且 has_detail=1 的 brand 列表.
+        """查询详情已标记完成、但洞察结果表或 has_insight 状态未闭环的品牌。
 
-        从 company_detail 关联 credit_code, 返回需要跑企查查洞察的公司.
+        关联 company_detail.credit_code 后，返回洞察抓取或补导入所需输入。
         """
         self.connect()
         cur = self.conn.cursor()
         cur.execute(
-            """SELECT MIN(cl.id) as id, cl.encrypt_brand_id, MIN(cl.boss_name) as boss_name,
+            """SELECT MIN(cl.id) as id, cl.encrypt_brand_id,
+                      MIN(cl.boss_name) as boss_name,
                       cd.business_info_json, cd.company_name, cd.credit_code
                FROM company_list cl
-               JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
-               WHERE cl.has_insight = 0 AND cl.has_detail = 1
+               LEFT JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+               LEFT JOIN company_insight ci ON cl.encrypt_brand_id = ci.brand_id
+               WHERE cl.has_detail = 1 AND cl.encrypt_brand_id != ''
+                 AND (cl.has_insight = 0 OR ci.brand_id IS NULL)
                GROUP BY cl.encrypt_brand_id
                ORDER BY MIN(cl.id)"""
         )
@@ -544,22 +606,44 @@ class JobDatabase:
         cur.execute("SELECT COUNT(DISTINCT encrypt_brand_id) FROM company_list WHERE encrypt_brand_id != ''")
         unique_companies = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM company_detail")
+        cur.execute(
+            """SELECT COUNT(*) FROM (
+                   SELECT cl.encrypt_brand_id FROM company_list cl
+                   JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+                   WHERE cl.encrypt_brand_id != ''
+                   GROUP BY cl.encrypt_brand_id
+                   HAVING MIN(cl.has_detail) = 1
+               )"""
+        )
         done_detail = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM company_insight")
+        cur.execute(
+            """SELECT COUNT(*) FROM (
+                   SELECT cl.encrypt_brand_id FROM company_list cl
+                   JOIN company_insight ci ON cl.encrypt_brand_id = ci.brand_id
+                   WHERE cl.encrypt_brand_id != ''
+                   GROUP BY cl.encrypt_brand_id
+                   HAVING MIN(cl.has_insight) = 1
+               )"""
+        )
         done_insight = cur.fetchone()[0]
 
         cur.execute(
-            """SELECT COUNT(DISTINCT encrypt_brand_id) FROM company_list
-               WHERE has_detail = 0 AND encrypt_brand_id != ''"""
+            """SELECT COUNT(DISTINCT cl.encrypt_brand_id) FROM company_list cl
+               WHERE cl.encrypt_brand_id != '' AND (
+                   cl.has_detail = 0 OR NOT EXISTS (
+                       SELECT 1 FROM company_detail cd
+                       WHERE cd.brand_id = cl.encrypt_brand_id
+                   )
+               )"""
         )
         pending_detail = cur.fetchone()[0]
 
         cur.execute(
             """SELECT COUNT(DISTINCT cl.encrypt_brand_id) FROM company_list cl
-               JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
-               WHERE cl.has_insight = 0"""
+               LEFT JOIN company_insight ci ON cl.encrypt_brand_id = ci.brand_id
+               WHERE cl.has_detail = 1 AND cl.encrypt_brand_id != ''
+                 AND (cl.has_insight = 0 OR ci.brand_id IS NULL)"""
         )
         pending_insight = cur.fetchone()[0]
 
@@ -594,26 +678,61 @@ class JobDatabase:
             return None
 
         cur.execute(
-            "SELECT COUNT(*) FROM company_detail WHERE brand_id IN "
-            "(SELECT DISTINCT encrypt_brand_id FROM company_list WHERE query_hash = ?)",
+            """SELECT COUNT(*) FROM (
+                   SELECT cl.encrypt_brand_id FROM company_list cl
+                   JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+                   WHERE cl.query_hash = ? AND cl.encrypt_brand_id != ''
+                   GROUP BY cl.encrypt_brand_id
+                   HAVING MIN(cl.has_detail) = 1
+               )""",
             (query_hash,),
         )
         detail_done = cur.fetchone()[0]
 
         cur.execute(
-            """SELECT COUNT(DISTINCT encrypt_brand_id) FROM company_list
-               WHERE query_hash = ? AND has_detail = 0 AND encrypt_brand_id != ''""",
+            """SELECT COUNT(DISTINCT cl.encrypt_brand_id) FROM company_list cl
+               WHERE cl.query_hash = ? AND cl.encrypt_brand_id != ''
+                 AND (cl.has_detail = 0 OR NOT EXISTS (
+                     SELECT 1 FROM company_detail cd
+                     WHERE cd.brand_id = cl.encrypt_brand_id
+                 ))""",
             (query_hash,),
         )
         detail_pending = cur.fetchone()[0]
 
         cur.execute(
             """SELECT COUNT(DISTINCT cl.encrypt_brand_id) FROM company_list cl
-               JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
-               WHERE cl.query_hash = ? AND cl.has_insight = 0""",
+               LEFT JOIN company_insight ci ON cl.encrypt_brand_id = ci.brand_id
+               WHERE cl.query_hash = ? AND cl.has_detail = 1
+                 AND cl.encrypt_brand_id != ''
+                 AND (cl.has_insight = 0 OR ci.brand_id IS NULL)""",
             (query_hash,),
         )
         insight_pending = cur.fetchone()[0]
+
+        cur.execute(
+            """SELECT COUNT(DISTINCT cl.encrypt_brand_id) FROM company_list cl
+               LEFT JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+               LEFT JOIN company_insight ci ON cl.encrypt_brand_id = ci.brand_id
+               WHERE cl.query_hash = ? AND cl.has_detail = 1
+                 AND cl.encrypt_brand_id != ''
+                 AND (cl.has_insight = 0 OR ci.brand_id IS NULL)
+                 AND (cd.brand_id IS NULL OR TRIM(COALESCE(cd.credit_code, '')) = '')""",
+            (query_hash,),
+        )
+        insight_input_missing = cur.fetchone()[0]
+
+        cur.execute(
+            """SELECT COUNT(DISTINCT cl.encrypt_brand_id) FROM company_list cl
+               JOIN company_detail cd ON cl.encrypt_brand_id = cd.brand_id
+               LEFT JOIN company_insight ci ON cl.encrypt_brand_id = ci.brand_id
+               WHERE cl.query_hash = ? AND cl.has_detail = 1
+                 AND cl.encrypt_brand_id != ''
+                 AND (cl.has_insight = 0 OR ci.brand_id IS NULL)
+                 AND TRIM(COALESCE(cd.credit_code, '')) != ''""",
+            (query_hash,),
+        )
+        insight_input_ready = cur.fetchone()[0]
 
         return {
             "query_hash": query_hash,
@@ -623,6 +742,8 @@ class JobDatabase:
             "detail_done": detail_done,
             "detail_pending": detail_pending,
             "insight_pending": insight_pending,
+            "insight_input_ready": insight_input_ready,
+            "insight_input_missing": insight_input_missing,
         }
 
     def get_all_query_hashes(self):

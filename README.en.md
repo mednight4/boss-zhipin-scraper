@@ -38,10 +38,11 @@ uv run python -u -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pa
 uv run python -m scripts.job_summary --top 15
 ```
 
-You can also use a BOSS query URL:
+You can also pass a BOSS search URL. URL mode uses the database selected by `--db-path` and runs the full list, detail, and Aiqicha insight pipeline by default. To scrape only the list, skip both detail and insight explicitly:
 
 ```powershell
-uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --no-detail --cdp-port 9222
+uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --db-path output/jobs.db --cdp-port 9222
+uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --no-detail --no-insight --db-path output/jobs.db --cdp-port 9222
 ```
 
 List supported cities with:
@@ -309,6 +310,8 @@ uv run python -m scripts.company_detail.extractor <company_url>
 uv run python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
 ```
 
+This standalone command only scrapes and saves JSON; it does not write `company_detail` or update `company_list.has_detail`. Use the pipeline `--step detail` entry point when the result must be imported and marked complete.
+
 Extracted fields include: basic info (job count, BOSS count, company name, funding stage, scale, industry), hot job list (salary/title/experience/degree/location/status), company description, website, products, business registration info (15 fields including legal representative, registered capital, address, etc.), work hours & benefits, recruiters, executives.
 
 Programmatic usage:
@@ -341,6 +344,15 @@ company_list.encrypt_brand_id = company_detail.brand_id
 company_list.encrypt_brand_id = company_insight.brand_id
 ```
 
+The full pipeline runs list → detail → insight. `--step all` accepts `--keyword` and `--city`, or an existing list JSON via `--list-json`; it validates input before scraping. URL and database modes share the same pipeline and database path:
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step all --keyword "AI Agent" --city 101020100 --pages 3 --db-path output/jobs.db
+uv run python -u -m scripts.boss_cdp_raw --db --step all --keyword "AI Agent" --city 101020100 --pages 3 --db-path output/jobs.db
+```
+
+Insight runs by default in a full pipeline. Use `--no-insight` to skip it; skipped stages remain pending in the database and are not reported as complete.
+
 View the current status:
 
 ```powershell
@@ -371,12 +383,14 @@ uv run python -u -m scripts.company_insight.scraper 91310104MA1FR5RY3N --port 92
 |---------|----------|
 | `[1] Query batches` | Search batches, keyword/city/job count/earliest insert time |
 | `[2] Overall progress` | Job count, unique companies, done/pending detail and insight counts |
-| `[3] Pending details` | Companies with `has_detail=0` |
-| `[4] Pending insights` | Insight tasks with an available `credit_code`; a list batch without company details does not yet provide an insight input |
+| `[3] Pending details` | Companies with `has_detail=0` or no matching `company_detail` row |
+| `[4] Pending insights` | Companies whose details are complete but insights are not; runnable entries need a `credit_code`, and missing inputs are reported separately |
 | `[5] Insight JSON reconciliation` | Canonical / orphan / legacy-named / unparsable / duplicate `credit_code` files |
 | `[6] Recently imported insights` | The latest five insight imports |
 
-Insight JSON is written to `output/insight/aqc_{credit_code}.json`. The detailed Agent routing and checks are documented in [`skill/agent_workflow.md`](skill/agent_workflow.md).
+Insight JSON is written to `output/insight/aqc_{credit_code}.json`. The insight stage needs the `credit_code` produced by company details. A JSON file alone does not mean a stage is complete: each detail/insight result must exist by `brand_id` and its corresponding `company_list.has_detail=1` / `has_insight=1` flag must be set. The standalone detail extractor only saves JSON. The single-company insight CLI tries to import an existing JSON before scraping and exits with code `1` if a saved JSON cannot be imported; pass `--db-path` to select the database.
+
+The detailed Agent routing and checks are documented in [`skill/agent_workflow.md`](skill/agent_workflow.md).
 
 ### When a CAPTCHA / risk-control page appears
 

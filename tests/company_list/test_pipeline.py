@@ -447,5 +447,414 @@ class PrintStatusSmokeTests(unittest.TestCase):
         self.assertIn("待爬洞察", output)
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+class PipelineRecoveryTests(unittest.TestCase):
+    """数据库待办决定恢复顺序；磁盘 JSON 仅作为可补导入输入。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmpdir.name, "jobs.db")
+        self.detail_dir = os.path.join(self.tmpdir.name, "company")
+        self.insight_dir = os.path.join(self.tmpdir.name, "insight")
+        os.makedirs(self.detail_dir)
+        os.makedirs(self.insight_dir)
+        self.query_url = "https://www.zhipin.com/web/geek/jobs?city=101020100&query=agent"
+        self.query_hash = pipeline.compute_query_hash(self.query_url)
+        self.db = JobDatabase(self.db_path)
+        self.db.connect()
+        self.db.init_schema()
+
+    def tearDown(self):
+        self.db.close()
+        self.tmpdir.cleanup()
+
+    def _seed_company(self, brand_id, *, has_detail=0, has_insight=0, credit_code=""):
+        from datetime import datetime
+        now = datetime.now().isoformat()
+        self.db.conn.execute(
+            """INSERT INTO company_list (
+                job_id, query_url, query_hash, keyword, city, city_code,
+                encrypt_brand_id, company_link, has_detail, has_insight, create_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f"job-{brand_id}", self.query_url, self.query_hash, "agent", "上海",
+             "101020100", brand_id, f"https://www.zhipin.com/gongsi/{brand_id}.html",
+             has_detail, has_insight, now),
+        )
+        if has_detail:
+            self.db.conn.execute(
+                """INSERT INTO company_detail (
+                    brand_id, company_name, credit_code, create_time
+                ) VALUES (?, ?, ?, ?)""",
+                (brand_id, f"公司-{brand_id}", credit_code, now),
+            )
+        self.db.conn.commit()
+
+    def test_detail_step_imports_existing_json_before_scraping_remaining_brands(self):
+        self._seed_company("brand0")
+        self._seed_company("brand1")
+        _write_json(os.path.join(self.detail_dir, "brand0.json"), {
+            "company_name": "已恢复公司",
+            "business_info": {"统一社会信用代码": "91310104MA1FR5RY3N"},
+        })
+        calls = []
+
+        def scrape_fn(company_link):
+            calls.append(company_link)
+            return {"company_name": "新抓公司", "business_info": {}}
+
+        imported = pipeline.step3_scrape_details(
+            self.db, scrape_fn, detail_json_dir=self.detail_dir
+        )
+
+        self.assertEqual(imported, 2)
+        self.assertEqual(calls, ["https://www.zhipin.com/gongsi/brand1.html"])
+        self.assertEqual(self.db.get_stats()["pending_detail"], 0)
+
+    def test_detail_import_scans_only_current_pending_brands(self):
+        self._seed_company("brand0")
+        self._seed_company("brand1")
+        _write_json(os.path.join(self.detail_dir, "brand0.json"), {"company_name": "待导入"})
+        _write_json(os.path.join(self.detail_dir, "unrelated.json"), {"company_name": "其他批次"})
+
+        imported = pipeline.step4_import_details(self.db, detail_json_dir=self.detail_dir)
+
+        self.assertEqual(imported, 1)
+        rows = self.db.conn.execute("SELECT brand_id FROM company_detail ORDER BY brand_id").fetchall()
+        self.assertEqual([row[0] for row in rows], ["brand0"])
+        self.assertEqual(self.db.get_stats()["pending_detail"], 1)
+
+    def test_detail_json_created_before_interruption_is_not_scraped_again(self):
+        self._seed_company("brand0")
+        _write_json(os.path.join(self.detail_dir, "brand0.json"), {
+            "company_name": "中断前已保存",
+            "business_info": {"统一社会信用代码": "91310104MA1FR5RY3N"},
+        })
+        calls = []
+
+        def should_not_scrape(company_link):
+            calls.append(company_link)
+            raise AssertionError("残留 JSON 应先补导入")
+
+        imported = pipeline.step3_scrape_details(
+            self.db, should_not_scrape, detail_json_dir=self.detail_dir
+        )
+        self.assertEqual(imported, 1)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.db.get_stats()["pending_detail"], 0)
+
+    def test_insight_import_continues_after_corrupt_and_orphan_json(self):
+        code0 = "91310104MA1FR5RY3N"
+        code1 = "91310117324576081E"
+        self._seed_company("brand0", has_detail=1, credit_code=code0)
+        self._seed_company("brand1", has_detail=1, credit_code=code1)
+        _write_json(os.path.join(self.insight_dir, f"aqc_{code0}.json"), {
+            "company_name": "已抓公司", "credit_code": code0,
+        })
+        with open(os.path.join(self.insight_dir, f"aqc_{code1}.json"), "w", encoding="utf-8") as f:
+            f.write("{ invalid")
+        _write_json(os.path.join(self.insight_dir, "aqc_99999999MA1FR5RY3N.json"), {
+            "credit_code": "99999999MA1FR5RY3N",
+        })
+        with open(os.path.join(self.insight_dir, "unknown.json"), "w", encoding="utf-8") as f:
+            f.write("not json")
+
+        imported = pipeline.step6_import_insights(self.db, insight_json_dir=self.insight_dir)
+        self.assertEqual(imported, 1)
+        self.assertEqual(self.db.get_stats()["done_insight"], 1)
+        self.assertEqual(self.db.get_stats()["pending_insight"], 1)
+
+    def test_fresh_batch_with_detail_pending_resumes_detail_before_freshness_skip(self):
+        self._seed_company("brand0")
+        pipe = pipeline.PipelineState(self.query_url, db=self.db)
+        self.assertEqual(pipe.decide(), "RESUME_DETAIL")
+
+    def test_insight_pending_without_credit_code_is_not_reported_complete(self):
+        self._seed_company("brand0", has_detail=1, credit_code="")
+        pipe = pipeline.PipelineState(self.query_url, db=self.db)
+        self.assertEqual(pipe.decide(), "INSIGHT_INPUT_MISSING")
+        self.assertEqual(pipe.step, "DETAIL_DONE")
+
+    def test_existing_list_json_is_imported_without_rescraping_and_skips_are_not_complete(self):
+        from unittest.mock import patch
+
+        path = os.path.join(self.tmpdir.name, f"{self.query_hash}.json")
+        _write_json(path, {
+            "keyword": "agent", "city": "上海", "city_code": "101020100",
+            "filters": {}, "query_url": self.query_url,
+            "query_hash": self.query_hash,
+            "jobs": [{
+                "job_id": "job-from-json", "encrypt_brand_id": "brand0",
+                "company_link": "https://www.zhipin.com/gongsi/brand0.html",
+            }],
+        })
+        pipe = pipeline.PipelineState(self.query_url, db=self.db)
+        with patch.object(pipeline, "QUERY_DIR", self.tmpdir.name), \
+                patch("scripts.boss_cdp_raw.scrape_list", side_effect=AssertionError("不得重复抓取")):
+            result = pipe.run(detail=False, insight=False)
+
+        self.assertEqual(result["action"], "IMPORT_LIST")
+        self.assertEqual(result["step"], "LIST_DB_IMPORTED")
+        self.assertEqual(result["pending_detail"], 1)
+        self.assertEqual(result["skipped_steps"], ["detail", "insight"])
+
+    def test_run_propagates_security_check_error(self):
+        from scripts.boss_cdp_raw import SecurityCheckError
+
+        self._seed_company("brand0")
+        pipe = pipeline.PipelineState(self.query_url, db=self.db)
+
+        def blocked_scrape(company_link):
+            raise SecurityCheckError("需要人工验证")
+
+        with self.assertRaises(SecurityCheckError):
+            pipe.run(detail=True, insight=False, scrape_detail_fn=blocked_scrape)
+
+
+class IndependentInsightPipelineTests(unittest.TestCase):
+    def test_insight_entry_imports_existing_legacy_json_before_network(self):
+        from unittest.mock import patch
+        from datetime import datetime
+
+        code = "91310104MA1FR5RY3N"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "jobs.db")
+            insight_dir = os.path.join(tmpdir, "insight")
+            os.makedirs(insight_dir)
+            db = JobDatabase(db_path)
+            db.connect()
+            db.init_schema()
+            db.conn.execute(
+                """INSERT INTO company_list (
+                    job_id, query_url, query_hash, keyword, city, encrypt_brand_id,
+                    has_detail, has_insight, create_time
+                ) VALUES ('job1', 'url', 'hash', 'agent', '上海', 'brand1', 1, 0, ?)""",
+                (datetime.now().isoformat(),),
+            )
+            db.conn.execute(
+                "INSERT INTO company_detail (brand_id, company_name, credit_code, create_time) VALUES ('brand1', '公司', ?, 'now')",
+                (code,),
+            )
+            db.conn.commit()
+            db.close()
+            _write_json(os.path.join(insight_dir, f"{code}.json"), {
+                "company_name": "公司", "credit_code": code,
+            })
+
+            with patch.object(pipeline, "INSIGHT_DIR", insight_dir):
+                imported = pipeline.run_insight_pipeline(
+                    lambda _: self.fail("已有 JSON 时不得重新抓取"), db_path=db_path
+                )
+
+            db = JobDatabase(db_path)
+            db.connect()
+            try:
+                self.assertEqual(imported, 1)
+                self.assertEqual(db.get_stats()["done_insight"], 1)
+                self.assertEqual(db.get_stats()["pending_insight"], 0)
+            finally:
+                db.close()
+
+
+
+
+class PipelineFullRunTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmpdir.name, "jobs.db")
+        self.query_url = "https://www.zhipin.com/web/geek/jobs?city=101020100&query=agent"
+        self.db = JobDatabase(self.db_path)
+        self.db.connect()
+        self.db.init_schema()
+
+    def tearDown(self):
+        self.db.close()
+        self.tmpdir.cleanup()
+
+    def _seed_company(self, brand_id, *, has_detail=0, has_insight=0, credit_code=""):
+        from datetime import datetime
+        now = datetime.now().isoformat()
+        self.db.conn.execute(
+            """INSERT INTO company_list (
+                job_id, query_url, query_hash, keyword, city, city_code,
+                encrypt_brand_id, has_detail, has_insight, create_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f"job-{brand_id}", self.query_url, pipeline.compute_query_hash(self.query_url),
+             "agent", "上海", "101020100", brand_id, has_detail, has_insight, now),
+        )
+        if has_detail:
+            self.db.conn.execute(
+                "INSERT INTO company_detail (brand_id, company_name, credit_code, create_time) VALUES (?, ?, ?, ?)",
+                (brand_id, f"公司-{brand_id}", credit_code, now),
+            )
+        self.db.conn.commit()
+
+    def test_full_run_uses_one_query_hash_for_json_database_and_result(self):
+        from unittest.mock import patch
+        from scripts.company_list.db import build_query_url
+
+        query_url = build_query_url("agent", "101020100", {})
+        query_hash = pipeline.compute_query_hash(query_url)
+        query_dir = os.path.join(self.tmpdir.name, "query")
+        detail_dir = os.path.join(self.tmpdir.name, "company")
+        insight_dir = os.path.join(self.tmpdir.name, "insight")
+
+        def fake_scrape_list(keyword, city_input, max_pages, filters, output_path, **kwargs):
+            _write_json(output_path, {
+                "keyword": keyword, "city": "上海", "city_code": "101020100",
+                "filters": filters, "query_url": query_url, "query_hash": query_hash,
+                "jobs": [{"job_id": "job-full", "encrypt_brand_id": "brand-full",
+                          "company_link": "https://www.zhipin.com/gongsi/brand-full.html"}],
+            })
+
+        pipe = pipeline.PipelineState(query_url, db=self.db)
+        with patch.object(pipeline, "QUERY_DIR", query_dir), \
+                patch.object(pipeline, "COMPANY_DIR", detail_dir), \
+                patch.object(pipeline, "INSIGHT_DIR", insight_dir), \
+                patch("scripts.boss_cdp_raw.scrape_list", side_effect=fake_scrape_list):
+            result = pipe.run(
+                keyword="agent", city_input="上海", filters={}, detail=True, insight=True,
+                scrape_detail_fn=lambda _: {
+                    "company_name": "全流程测试公司",
+                    "business_info": {"统一社会信用代码": "91310104MA1FR5RY3N"},
+                },
+                scrape_insight_fn=lambda code: {
+                    "company_name": "全流程测试公司", "credit_code": code,
+                },
+            )
+
+        with open(os.path.join(query_dir, f"{query_hash}.json"), encoding="utf-8") as f:
+            payload = json.load(f)
+        self.assertEqual((payload["query_url"], payload["query_hash"], payload["city_code"]),
+                         (query_url, query_hash, "101020100"))
+        self.assertEqual(result["query_hash"], query_hash)
+        self.assertEqual(result["step"], "COMPLETE")
+        self.assertEqual((result["pending_detail"], result["pending_insight"]), (0, 0))
+        self.assertEqual(result["stats"]["done_detail"], 1)
+        self.assertEqual(result["stats"]["done_insight"], 1)
+
+    def test_query_returns_stats_before_closing_database(self):
+        from datetime import datetime
+
+        self._seed_company("brand1", has_detail=1, has_insight=1,
+                           credit_code="91310104MA1FR5RY3N")
+        self.db.conn.execute(
+            "INSERT INTO company_insight (brand_id, credit_code, create_time) VALUES ('brand1', '91310104MA1FR5RY3N', 'now')"
+        )
+        self.db.conn.execute(
+            "UPDATE company_list SET create_time = ? WHERE job_id = 'job-brand1'",
+            (datetime.now().isoformat(),),
+        )
+        self.db.conn.commit()
+
+        result = pipeline.query(self.query_url, db_path=self.db_path)
+
+        self.assertEqual(result["action"], "SKIP")
+        self.assertEqual(result["stats"]["done_detail"], 1)
+        self.assertEqual(result["stats"]["done_insight"], 1)
+
+
+class PipelineCliOrchestrationTests(unittest.TestCase):
+    def test_url_mode_uses_requested_database_and_runs_insight(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from scripts.company_list import pipeline as pipeline_module
+        from scripts.company_list import db as db_module
+        from scripts import boss_cdp_raw
+
+        class FakeDb:
+            def __init__(self, path):
+                self.path, self.closed = path, False
+            def close(self):
+                self.closed = True
+
+        class FakePipe:
+            def __init__(self, query_url, db):
+                self.query_url, self.db, self.kwargs = query_url, db, None
+            def run(self, **kwargs):
+                self.kwargs = kwargs
+                return {"action": "SCRAPE_LIST", "step": "COMPLETE",
+                        "pending_detail": 0, "pending_insight": 0,
+                        "skipped_steps": [], "stats": {}}
+
+        dbs, pipes = [], []
+        def make_db(path):
+            value = FakeDb(path); dbs.append(value); return value
+        def make_pipe(url, db, **kwargs):
+            value = FakePipe(url, db); pipes.append(value); return value
+        insight_fn = lambda _: {}
+        args = SimpleNamespace(
+            url="https://www.zhipin.com/web/geek/jobs?city=101020100&query=agent",
+            db_path="custom/jobs.db", pages=2, cdp_port=9333, format="json",
+            detail=True, insight=True, insight_delay=7,
+        )
+        with patch.object(db_module, "JobDatabase", side_effect=make_db), \
+                patch.object(pipeline_module, "PipelineState", side_effect=make_pipe), \
+                patch.object(pipeline_module, "_insight_fn_factory", return_value=insight_fn):
+            boss_cdp_raw._run_url_pipeline(args)
+
+        self.assertEqual(dbs[0].path, "custom/jobs.db")
+        self.assertTrue(dbs[0].closed)
+        self.assertIs(pipes[0].db, dbs[0])
+        self.assertIs(pipes[0].kwargs["scrape_insight_fn"], insight_fn)
+        self.assertTrue(pipes[0].kwargs["insight"])
+
+    def test_db_all_mode_uses_same_pipeline_and_requested_database(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from scripts.company_list import pipeline as pipeline_module
+        from scripts.company_list import db as db_module
+        from scripts import boss_cdp_raw
+
+        class FakeDb:
+            def __init__(self, path):
+                self.path, self.closed = path, False
+            def connect(self):
+                return self
+            def init_schema(self):
+                return None
+            def close(self):
+                self.closed = True
+
+        class FakePipe:
+            def __init__(self, query_url, db):
+                self.query_url, self.db, self.kwargs = query_url, db, None
+            def run(self, **kwargs):
+                self.kwargs = kwargs
+                return {"action": "SCRAPE_LIST", "step": "COMPLETE",
+                        "pending_detail": 0, "pending_insight": 0,
+                        "skipped_steps": [], "stats": {}}
+
+        dbs, pipes = [], []
+        def make_db(path):
+            value = FakeDb(path); dbs.append(value); return value
+        def make_pipe(url, db, **kwargs):
+            value = FakePipe(url, db); pipes.append(value); return value
+        detail_fn, insight_fn = lambda _: {}, lambda _: {}
+        args = SimpleNamespace(
+            step="all", list_json=None, db_path="custom/all.db", city="101020100",
+            keyword="agent", scale=None, stage=None, salary=None, experience=None,
+            degree=None, industry=None, pages=2, cdp_port=9222, format="json",
+            detail=True, insight=True, insight_delay=15, detail_json_dir=None,
+        )
+        with patch.object(db_module, "JobDatabase", side_effect=make_db), \
+                patch.object(pipeline_module, "PipelineState", side_effect=make_pipe), \
+                patch.object(pipeline_module, "_detail_fn_factory", return_value=detail_fn), \
+                patch.object(pipeline_module, "_insight_fn_factory", return_value=insight_fn):
+            boss_cdp_raw._run_db_pipeline(args)
+
+        self.assertEqual(dbs[0].path, "custom/all.db")
+        self.assertTrue(dbs[0].closed)
+        self.assertIs(pipes[0].db, dbs[0])
+        self.assertTrue(pipes[0].kwargs["insight"])
+        self.assertIs(pipes[0].kwargs["scrape_insight_fn"], insight_fn)
+
+    def test_all_step_rejects_missing_parameters_before_database_work(self):
+        from unittest.mock import patch
+        import sys
+
+        with patch.object(sys, "argv", ["pipeline", "--step", "all"]), \
+                patch.object(pipeline, "JobDatabase", side_effect=AssertionError("不可初始化数据库")):
+            with self.assertRaises(SystemExit) as ctx:
+                pipeline.main()
+        self.assertEqual(ctx.exception.code, 1)

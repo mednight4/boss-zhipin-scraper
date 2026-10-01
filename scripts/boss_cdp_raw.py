@@ -1732,6 +1732,9 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 cdp_port=DEFAULT_CDP_PORT, fmt="json", allow_dom_fallback=False,
                 diff_base=None):
     city_name, city_code = resolve_city(city_input)
+    from scripts.company_list.db import build_query_url, compute_query_hash
+    query_url = build_query_url(keyword, city_code, filters)
+    query_hash = compute_query_hash(query_url)
     cdp = CDPSession(cdp_port)
     all_jobs = []
     seen = set()
@@ -1941,6 +1944,9 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 flush_jobs(output_path, {
                     "keyword": keyword,
                     "city": city_name,
+                    "city_code": city_code,
+                    "query_url": query_url,
+                    "query_hash": query_hash,
                     "filters": filters,
                     "filter_desc": filter_desc,
                     "scraped_at": datetime.now().isoformat(),
@@ -1978,6 +1984,9 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
         flush_jobs(output_path, {
             "keyword": keyword,
             "city": city_name,
+            "city_code": city_code,
+            "query_url": query_url,
+            "query_hash": query_hash,
             "filters": filters,
             "filter_desc": filter_desc,
             "scraped_at": datetime.now().isoformat(),
@@ -2851,207 +2860,179 @@ def resolve_setup_browser(setup_chrome, setup_edge, browser_choice):
 # SQLite 三表桥接管道
 # ============================================================
 def _run_url_pipeline(args):
-    """解析 BOSS URL -> PipelineState -> 跑完整管道."""
-    from urllib.parse import urlparse, parse_qs, unquote
-    from scripts.company_list.pipeline import PipelineState
+    """将 URL 规范化后复用 PipelineState 的列表、详情和洞察阶段。"""
+    from urllib.parse import parse_qs, urlparse
+    from scripts.company_list.db import JobDatabase, build_query_url
+    from scripts.company_list.pipeline import PipelineState, _insight_fn_factory
 
-    parsed = urlparse(args.url)
-    params = parse_qs(parsed.query)
+    params = parse_qs(urlparse(args.url).query)
+    keyword = params.get("query", [""])[0].strip()
+    if not keyword:
+        print("错误: --url 必须包含非空 query 关键词")
+        sys.exit(1)
+    city_input = params.get("city", ["101020100"])[0]
+    try:
+        _, city_code = resolve_city(city_input)
+    except CityResolutionError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+    filters = {
+        key: params[key][0]
+        for key in ("experience", "degree", "industry", "scale", "salary", "stage")
+        if params.get(key, [""])[0]
+    }
+    query_url = build_query_url(keyword, city_code, filters)
 
-    keyword = unquote(params.get("query", [""])[0])
-    city = params.get("city", [""])[0]
-    if not city:
-        city = "101020100"
-
-    filters = {}
-    for key in ["scale", "stage", "salary", "experience", "degree", "industry"]:
-        val = params.get(key, [None])[0]
-        if val:
-            filters[key] = val
-
-    print(f"=== URL 管道模式 ===")
+    print("=== URL 管道模式 ===")
     print(f"URL: {args.url}")
-    print(f"关键词: {keyword} | 城市: {city}")
+    print(f"关键词: {keyword} | 城市码: {city_code}")
     if filters:
         print(f"筛选: {filters}")
 
-    pipe = PipelineState(args.url)
-    action = pipe.decide()
-    print(f"决策: {action}")
-
-    if action == "SKIP":
-        info = pipe.db.get_query_info(pipe.query_hash)
-        print(f"数据已就绪 (创建时间: {info['oldest_create_time']})")
-        print(f"职位: {info['job_count']} | 详情: {info['detail_done']}/{info['detail_done'] + info['detail_pending']}")
-        pipe.db.close()
-        return
-
-    result = pipe.run(
-        keyword=keyword,
-        city_input=city,
-        filters=filters,
-        max_pages=args.pages,
-        cdp_port=args.cdp_port,
-        fmt=args.format,
-        detail=args.detail,
-    )
-    pipe.db.close()
-    print(f"\n=== 完成 ===")
-    print(f"状态: {result['step']}")
+    db = JobDatabase(args.db_path)
+    pipe = PipelineState(query_url, db=db)
+    try:
+        result = pipe.run(
+            keyword=keyword,
+            city_input=city_code,
+            filters=filters,
+            max_pages=args.pages,
+            cdp_port=args.cdp_port,
+            fmt=args.format,
+            detail=args.detail,
+            insight=args.insight,
+            scrape_insight_fn=_insight_fn_factory(args.cdp_port, args.insight_delay),
+        )
+    finally:
+        db.close()
+    print(f"\n=== 管道检查完成 ===")
+    print(f"决策: {result['action']} | 状态: {result['step']}")
+    print(f"真实待办: detail={result['pending_detail']}, insight={result['pending_insight']}")
+    print(f"跳过阶段: {result['skipped_steps']}")
     print(f"统计: {result['stats']}")
 
 
 def _run_db_pipeline(args):
-    """SQLite 三表桥接的分阶段管道入口."""
-    from scripts.company_list.db import (
-        JobDatabase, build_query_url, compute_query_hash, QUERY_DIR, COMPANY_DIR
+    """SQLite CLI 的各步骤共用 PipelineState 和现有阶段函数。"""
+    from scripts.company_list.db import JobDatabase, build_query_url, compute_query_hash
+    from scripts.company_list.pipeline import (
+        PipelineState,
+        _detail_fn_factory,
+        _insight_fn_factory,
+        _query_identity_from_list_json,
+        run_insight_pipeline,
+        step2_import_list,
+        step3_scrape_details,
     )
-    from scripts.company_detail.extractor import scrape_company_detail
-    from scripts.company_insight.scraper import InsightBlockedError, scrape_aqc_by_credit_code
+    from scripts.company_insight.scraper import InsightBlockedError
 
-    db_path = args.db_path or None
     step = args.step
+    if step == "all":
+        if args.list_json:
+            try:
+                identity = _query_identity_from_list_json(args.list_json)
+            except (OSError, json.JSONDecodeError, ValueError) as e:
+                print(f"❌ 无法从列表 JSON 恢复查询批次: {e}")
+                sys.exit(1)
+        else:
+            try:
+                _, city_code = resolve_city(args.city)
+            except CityResolutionError as e:
+                print(f"❌ {e}")
+                sys.exit(1)
+            filters = {
+                key: getattr(args, key)
+                for key in ("scale", "stage", "salary", "experience", "degree", "industry")
+                if getattr(args, key)
+            }
+            query_url = build_query_url(args.keyword, city_code, filters)
+            identity = {
+                "keyword": args.keyword,
+                "city": city_code,
+                "filters": filters,
+                "query_url": query_url,
+                "query_hash": compute_query_hash(query_url),
+            }
 
-    db = JobDatabase(db_path)
+        db = JobDatabase(args.db_path)
+        db.connect()
+        db.init_schema()
+        pipe = PipelineState(identity["query_url"], db=db, query_hash=identity["query_hash"])
+        try:
+            result = pipe.run(
+                keyword=identity["keyword"],
+                city_input=identity["city"],
+                filters=identity["filters"],
+                max_pages=args.pages,
+                cdp_port=args.cdp_port,
+                fmt=args.format,
+                detail=args.detail,
+                insight=args.insight,
+                scrape_detail_fn=_detail_fn_factory(args.cdp_port),
+                scrape_insight_fn=_insight_fn_factory(args.cdp_port, args.insight_delay),
+                list_json_path=args.list_json,
+                detail_json_dir=args.detail_json_dir,
+            )
+        except InsightBlockedError as e:
+            print(f"\n🛑 {e}")
+            print("   已中止本轮洞察；人工完成验证后重跑同一命令即可续做。")
+            sys.exit(2)
+        finally:
+            db.close()
+        print(f"\n=== 完整管道本轮结束 ===")
+        print(f"决策: {result['action']} | 状态: {result['step']}")
+        print(f"真实待办: detail={result['pending_detail']}, insight={result['pending_insight']}")
+        print(f"跳过阶段: {result['skipped_steps']}")
+        print(f"统计: {result['stats']}")
+        return
+
+    if step == "insight":
+        imported = run_insight_pipeline(
+            scrape_insight_fn=_insight_fn_factory(args.cdp_port, args.insight_delay),
+            db_path=args.db_path,
+        )
+        print(f"\n洞察处理结束: 本轮导入 {imported} 家；请以数据库待办数确认剩余工作。")
+        return
+
+    db = JobDatabase(args.db_path)
     db.connect()
     db.init_schema()
-
     try:
-        if step in ("list", "all"):
-            # ── Step 1: 列表抓取 ──
+        if step == "list":
             if args.list_json:
-                # 从已有 JSON 导入
                 json_path = args.list_json
-                print(f"=== Step 1: 从 JSON 导入列表 ===")
-                print(f"来源: {json_path}")
             else:
-                # 执行列表抓取
-                if not args.input:
-                    try:
-                        resolve_city(args.city)
-                    except CityResolutionError as e:
-                        print(f"❌ {e}")
-                        sys.exit(1)
-
-                max_pages = min(args.pages, MAX_PAGES)
-                filters = {}
-                for key in ["scale", "stage", "salary", "experience", "degree", "industry"]:
-                    val = getattr(args, key)
-                    if val:
-                        filters[key] = val
-
-                os.makedirs(QUERY_DIR, exist_ok=True)
-                city_name, city_code = resolve_city(args.city)
+                try:
+                    _, city_code = resolve_city(args.city)
+                except CityResolutionError as e:
+                    print(f"❌ {e}")
+                    sys.exit(1)
+                filters = {
+                    key: getattr(args, key)
+                    for key in ("scale", "stage", "salary", "experience", "degree", "industry")
+                    if getattr(args, key)
+                }
                 query_url = build_query_url(args.keyword, city_code, filters)
                 query_hash = compute_query_hash(query_url)
+                os.makedirs(QUERY_DIR, exist_ok=True)
                 json_path = os.path.join(QUERY_DIR, f"{query_hash}.json")
-
-                print(f"=== Step 1: 列表抓取 ===")
-                print(f"关键词: {args.keyword} | 城市: {city_name}")
-                print(f"JSON 归档: {json_path}")
-
                 db.close()
-                result = scrape_list(
-                    args.keyword, args.city, max_pages, filters, json_path,
-                    cdp_port=args.cdp_port, fmt=args.format,
+                scrape_list(
+                    args.keyword, city_code, min(args.pages, MAX_PAGES), filters,
+                    json_path, cdp_port=args.cdp_port, fmt=args.format,
                     allow_dom_fallback=args.allow_dom_fallback,
                     diff_base=args.diff_base,
                 )
                 db.connect()
                 db.init_schema()
-
-            # 导入列表到 DB
-            inserted, skipped = db.import_list_from_json(json_path)
-            print(f"导入列表: {inserted} 新增, {skipped} 跳过")
-
-        if step in ("detail", "all"):
-            # ── Step 2: 详情抓取 ──
-            print(f"\n=== Step 2: 详情处理 ===")
-
-            if args.detail_json_dir:
-                # 从指定目录导入
-                detail_dir = args.detail_json_dir
-                print(f"来源目录: {detail_dir}")
-                json_paths = []
-                for fp in glob.glob(os.path.join(detail_dir, "*.json")):
-                    brand_id = os.path.basename(fp).replace(".json", "")
-                    json_paths.append((fp, brand_id))
-            elif step == "detail" and not args.list_json:
-                # 扫描 DB 待爬品牌 + 执行详情抓取
-                brands = db.get_pending_detail_brands()
-                print(f"待爬详情: {len(brands)} 个公司")
-
-                os.makedirs(COMPANY_DIR, exist_ok=True)
-                json_paths = []
-                detail_imported = 0
-                for brand in brands:
-                    brand_id = brand["encrypt_brand_id"]
-                    company_link = brand["company_link"]
-                    if not brand_id or not company_link:
-                        continue
-                    json_path = os.path.join(COMPANY_DIR, f"{brand_id}.json")
-                    print(f"  抓取: {brand['boss_name']} ({brand_id})")
-                    try:
-                        db.close()
-                        detail = scrape_company_detail(company_link, cdp_port=args.cdp_port)
-                        with open(json_path, "w", encoding="utf-8") as f:
-                            json.dump(detail, f, ensure_ascii=False, indent=2)
-                        json_paths.append((json_path, brand_id))
-                        db.connect()
-                        db.init_schema()
-                        db.import_detail_from_json(json_path, brand_id)
-                        db.mark_detail_done(brand_id)
-                        detail_imported += 1
-                    except SecurityCheckError:
-                        # 验证码/安全校验：中止整轮，交人工处理（#97）
-                        db.connect()
-                        db.init_schema()
-                        raise
-                    except (OSError, sqlite3.Error, json.JSONDecodeError,
-                            TypeError, ValueError, RuntimeError) as e:
-                        print(f"  ❌ 失败: {e}")
-                        db.connect()
-                        db.init_schema()
-                        continue
-            else:
-                json_paths = []
-
-            # 兜底导入残留 JSON（兼容旧数据/中断恢复）
-            fallback_imported = 0
-            for json_path, brand_id in json_paths:
-                if not os.path.exists(json_path):
-                    continue
-                db.import_detail_from_json(json_path, brand_id)
-                db.mark_detail_done(brand_id)
-                fallback_imported += 1
-            print(f"导入详情: {detail_imported} (兜底+{fallback_imported}) 个公司")
-
-        if step == "insight":
-            # ── Step 3: 洞察（CDP 自爬虫抓取爱企查） ──
-            print(f"\n=== Step 3: 洞察（CDP 自爬虫抓取爱企查） ===")
-            from scripts.company_list.pipeline import step5_scrape_insights, step6_import_insights, INSIGHT_DIR
-
-            def _scrape_insight(credit_code):
-                return scrape_aqc_by_credit_code(credit_code, cdp_port=args.cdp_port)
-
-            try:
-                insight_imported = step5_scrape_insights(db, _scrape_insight, INSIGHT_DIR)
-            except InsightBlockedError as e:
-                # 爱企查验证码：中止整轮，退出码 2，交人工处理（#97）
-                print(f"\n🛑 {e}")
-                print("   已中止本轮洞察抓取；人工完成验证后重跑同一命令即可续做。")
-                sys.exit(2)
-            print(f"洞察抓取: {insight_imported} 个公司")
-            insight_fallback = step6_import_insights(db, insight_json_dir=INSIGHT_DIR)
-            print(f"兜底导入: {insight_fallback} 个公司洞察 JSON")
-
-        # 输出统计
-        stats = db.get_stats()
-        print(f"\n📊 DB 统计: {stats['total_jobs']} 职位 | {stats['unique_companies']} 公司 | "
-              f"详情 {stats['done_detail']}/{stats['unique_companies']} | "
-              f"待爬详情 {stats['pending_detail']} | "
-              f"洞察 {stats['done_insight']}/{stats['unique_companies']} | "
-              f"待爬洞察 {stats['pending_insight']}")
+            inserted, skipped = step2_import_list(db, json_path)
+            print(f"\n列表导入完成: {inserted} 新增, {skipped} 跳过")
+        elif step == "detail":
+            imported = step3_scrape_details(
+                db, _detail_fn_factory(args.cdp_port),
+                detail_json_dir=args.detail_json_dir,
+            )
+            print(f"\n详情处理结束: 本轮导入 {imported} 家；请以数据库待办数确认剩余工作。")
     finally:
         db.close()
 
@@ -3186,7 +3167,11 @@ def _main():
     p.add_argument("--db-path", default=None,
                    help=f"自定义 SQLite 数据库路径 (默认 {_DEFAULT_DB_PATH})")
     p.add_argument("--step", choices=["list", "detail", "insight", "all"], default="all",
-                   help="执行哪一步（list=仅列表, detail=仅详情, insight=仅洞察(预留), all=完整管道，默认 all）")
+                   help="执行步骤（all=列表、详情和洞察完整流程；默认 all）")
+    p.add_argument("--no-insight", dest="insight", action="store_false", default=True,
+                   help="完整流程中跳过爱企查洞察（默认执行）")
+    p.add_argument("--insight-delay", type=float, default=15,
+                   help="洞察抓取间隔基准秒数 (实际为 delay±5s, 最低5s)")
     p.add_argument("--list-json", default=None,
                    help="指定列表 JSON 路径（跳过列表抓取，直接从 JSON 导入 DB）")
     p.add_argument("--detail-json-dir", default=None,

@@ -315,6 +315,10 @@ class TestGetPendingDetailBrands(unittest.TestCase):
         db.import_list_from_json(self.json_path)
         brands = db.get_pending_detail_brands()
         for b in brands:
+            db.conn.execute(
+                "INSERT INTO company_detail (brand_id, create_time) VALUES (?, ?)",
+                (b["encrypt_brand_id"], "2026-09-30T00:00:00"),
+            )
             db.mark_detail_done(b["encrypt_brand_id"])
         brands = db.get_pending_detail_brands()
         self.assertEqual(len(brands), 0)
@@ -508,6 +512,134 @@ class TestContextManager(unittest.TestCase):
             if os.path.exists(db_path):
                 os.remove(db_path)
             os.rmdir(tmpdir)
+
+
+
+
+class TestListQueryIdentity(unittest.TestCase):
+    """列表 JSON、文件名和数据库使用同一规范批次身份。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db = JobDatabase(os.path.join(self.tmpdir.name, "jobs.db"))
+        self.db.connect()
+        self.db.init_schema()
+
+    def tearDown(self):
+        self.db.close()
+        self.tmpdir.cleanup()
+
+    def test_import_uses_canonical_metadata_identity(self):
+        city_code = "101020100"
+        query_url = build_query_url("agent", city_code, {"scale": "303"})
+        query_hash = compute_query_hash(query_url)
+        path = os.path.join(self.tmpdir.name, f"{query_hash}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({
+                "keyword": "agent", "city": "上海", "city_code": city_code,
+                "filters": {"scale": "303"}, "query_url": query_url,
+                "query_hash": query_hash, "jobs": _make_jobs()[:1],
+            }, f, ensure_ascii=False)
+
+        self.db.import_list_from_json(path)
+        row = self.db.conn.execute(
+            "SELECT query_url, query_hash, city_code FROM company_list"
+        ).fetchone()
+        self.assertEqual(tuple(row), (query_url, query_hash, city_code))
+        self.assertEqual(os.path.splitext(os.path.basename(path))[0], row["query_hash"])
+
+    def test_legacy_json_resolves_city_name_not_job_location(self):
+        path = _make_list_json(self.tmpdir.name, _make_jobs()[:1])
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["jobs"][0]["location"] = "北京·朝阳区"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+        self.db.import_list_from_json(path)
+        row = self.db.conn.execute(
+            "SELECT city_code, query_hash FROM company_list"
+        ).fetchone()
+        expected_url = build_query_url("agent", "101020100", {"scale": "303"})
+        self.assertEqual(row["city_code"], "101020100")
+        self.assertEqual(row["query_hash"], compute_query_hash(expected_url))
+
+    def test_inconsistent_json_query_hash_is_rejected(self):
+        query_url = build_query_url("agent", "101020100", {})
+        path = os.path.join(self.tmpdir.name, "bad.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({
+                "keyword": "agent", "city": "上海", "city_code": "101020100",
+                "filters": {}, "query_url": query_url, "query_hash": "wrong",
+                "jobs": _make_jobs()[:1],
+            }, f, ensure_ascii=False)
+
+        with self.assertRaisesRegex(ValueError, "query_hash"):
+            self.db.import_list_from_json(path)
+
+
+class TestCompletionStateBoundaries(unittest.TestCase):
+    """结果表记录和列表状态标记必须同时成立才算完成。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db = JobDatabase(os.path.join(self.tmpdir.name, "jobs.db"))
+        self.db.connect()
+        self.db.init_schema()
+        self.db.conn.execute(
+            """INSERT INTO company_list (
+                job_id, query_url, query_hash, keyword, city, encrypt_brand_id,
+                has_detail, has_insight, create_time
+            ) VALUES ('job1', 'url', 'hash', 'agent', '上海', 'brand1', 1, 1, '2026-09-30T00:00:00')"""
+        )
+        self.db.conn.commit()
+
+    def tearDown(self):
+        self.db.close()
+        self.tmpdir.cleanup()
+
+    def test_missing_result_rows_remain_pending_even_when_flags_are_set(self):
+        stats = self.db.get_stats()
+        self.assertEqual(stats["done_detail"], 0)
+        self.assertEqual(stats["pending_detail"], 1)
+        self.assertEqual(stats["done_insight"], 0)
+        self.assertEqual(stats["pending_insight"], 1)
+
+    def test_mixed_status_flags_keep_brand_pending_until_all_jobs_are_marked(self):
+        self.db.conn.execute(
+            """INSERT INTO company_list (
+                job_id, query_url, query_hash, keyword, city, encrypt_brand_id,
+                has_detail, has_insight, create_time
+            ) VALUES ('job2', 'url', 'hash', 'agent', '上海', 'brand1', 1, 0, '2026-09-30T00:00:00')"""
+        )
+        self.db.conn.execute(
+            "INSERT INTO company_detail (brand_id, credit_code, create_time) VALUES ('brand1', '91310104MA1FR5RY3N', 'now')"
+        )
+        self.db.conn.execute(
+            "INSERT INTO company_insight (brand_id, credit_code, create_time) VALUES ('brand1', '91310104MA1FR5RY3N', 'now')"
+        )
+        self.db.conn.commit()
+
+        stats = self.db.get_stats()
+
+        self.assertEqual(stats["done_detail"], 1)
+        self.assertEqual(stats["pending_detail"], 0)
+        self.assertEqual(stats["done_insight"], 0)
+        self.assertEqual(stats["pending_insight"], 1)
+
+    def test_flags_and_result_rows_are_both_required_for_completion(self):
+        self.db.conn.execute(
+            "INSERT INTO company_detail (brand_id, credit_code, create_time) VALUES ('brand1', '91310104MA1FR5RY3N', 'now')"
+        )
+        self.db.conn.execute(
+            "INSERT INTO company_insight (brand_id, credit_code, create_time) VALUES ('brand1', '91310104MA1FR5RY3N', 'now')"
+        )
+        self.db.conn.commit()
+        stats = self.db.get_stats()
+        self.assertEqual(stats["pending_detail"], 0)
+        self.assertEqual(stats["done_detail"], 1)
+        self.assertEqual(stats["pending_insight"], 0)
+        self.assertEqual(stats["done_insight"], 1)
 
 
 if __name__ == "__main__":

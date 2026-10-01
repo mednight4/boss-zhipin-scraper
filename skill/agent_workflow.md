@@ -40,6 +40,8 @@ Aiqicha company_id / pageid
 - 当前执行顺序是 `list → detail → insight`。
 - 列表导入后不能直接启动洞察，因为此时通常还没有 `credit_code`。
 - 结果表最终可以通过 `brand_id` 回连 `company_list`，但“结果可以连接”不等于“洞察输入已经具备”。
+- JSON 文件只表示可恢复输入。详情完成须同时有 `company_detail.brand_id` 记录与 `company_list.has_detail=1`；洞察完成须同时有 `company_insight.brand_id` 记录与 `company_list.has_insight=1`。
+- 最终状态和待办数量必须在阶段后重新从数据库读取；用户跳过阶段要单独报告，不能转成数据库意义上的 `COMPLETE`。
 
 ### 错误认知拦截
 
@@ -244,9 +246,11 @@ uv run python -c "from scripts.company_list.pipeline import PipelineState; p=Pip
 
 - `SCRAPE_LIST`：没有可复用列表 JSON，执行列表抓取。
 - `IMPORT_LIST`：已有列表 JSON，执行导入，不重复抓列表。
-- `RESUME_REFRESH`：批次过期，通过 URL 管道刷新。
-- `SCRAPE_INSIGHT`：只代表状态机认为存在洞察待办；执行前仍要检查 `credit_code` 是否存在。
-- `SKIP`：批次在新鲜度窗口内；仍需执行 `CHK-STATUS`，不能只凭 `SKIP` 宣称三张表都完整。
+- `RESUME_DETAIL`：数据库有详情待办时优先恢复详情，即使列表数据仍在新鲜度窗口内。
+- `SCRAPE_INSIGHT`：详情待办为 0，且存在带 `credit_code` 的洞察待办。
+- `INSIGHT_INPUT_MISSING`：洞察仍待处理，但缺少可用 `credit_code`；先检查详情数据，不得宣称完成。
+- `RESUME_REFRESH`：详情和洞察待办都已解决，但列表批次超出新鲜度窗口。
+- `SKIP`：数据库待办均为 0 且批次仍新鲜；不能只凭 JSON 文件或最近一条日志判断。
 
 ### CHK-STATUS：检查统一业务状态
 
@@ -271,10 +275,10 @@ uv run python -m scripts.company_list.pipeline --step status --db-path output/jo
 
 - 无查询批次且无目标 JSON：`IDLE`，执行列表抓取。
 - 列表 JSON 存在但 DB 无对应批次：`LIST_JSON_SAVED`，执行列表导入。
-- `pending_detail > 0`：`DETAIL_PENDING`，执行 `--step detail`。
-- `pending_detail = 0` 且存在可用洞察待办：`INSIGHT_PENDING`，执行 `--step insight`。
-- 两个 pending 都为 0：`COMPLETE`，停止抓取并读取结果。
-- 洞察待办缺少 `credit_code`：`INSIGHT_INPUT_MISSING`，不能猜测信用代码。
+- `pending_detail > 0`：`DETAIL_PENDING`，执行 `--step detail`；入口先补导入当前待办公司的详情 JSON，再抓取剩余公司。
+- `pending_detail = 0` 且存在带 `credit_code` 的洞察待办：`INSIGHT_PENDING`，执行 `--step insight`。
+- `pending_detail = 0` 但洞察待办缺少 `credit_code`：`INSIGHT_INPUT_MISSING`，先调查详情数据，不得宣称完成。
+- 两个 pending 都为 0：数据库状态已闭环，停止抓取并读取结果；详情和洞察均要求结果表记录与列表状态标记同时存在。
 - JSON 对账存在孤儿、旧命名、重复或无法解析文件：先记录异常，不自行删除或重命名。
 
 注意：当前 `pending_insight` 只统计已经能够通过 `company_detail` 关联的洞察对象。因此列表刚导入时看到 `pending_insight=0`，不代表洞察已经完成，而可能代表 `company_detail` 尚未产生洞察输入。
@@ -295,7 +299,7 @@ uv run python -c "from scripts.company_list.db import JobDatabase; db=JobDatabas
 
 结果解释：
 
-- `get_pending_detail_brands()` 非空：存在 `has_detail=0`，执行详情。
+- `get_pending_detail_brands()` 非空：存在 `has_detail=0` 或缺少 `company_detail` 记录的公司，执行详情阶段。
 - `get_pending_insight_brands()` 非空且包含 `credit_code`：存在可执行的洞察待办。
 - 洞察待办为空但 `company_detail` 尚未完成：先执行详情。
 - 洞察待办存在但缺 `credit_code`：状态为 `INSIGHT_INPUT_MISSING`，停止猜测。
@@ -343,13 +347,15 @@ uv run python -m json.tool "output/query/QUERY_HASH.json" *> $null; if ($LASTEXI
 
 ### CHK-CODE：代码变更检查
 
-适用情境：只有修改 Python 代码时使用。本次文档任务不修改业务代码。
+适用情境：修改 Python 代码时使用；抓取、登录、详情、数据库或管道改动都要运行相关回归。
 
 ```powershell
 uv run python -m py_compile scripts/boss_cdp_raw.py scripts/company_list/db.py scripts/company_list/pipeline.py scripts/company_detail/extractor.py scripts/company_insight/scraper.py
 uv run python -m unittest tests.chrome_setup.test_chrome_setup
-uv run python -m unittest tests.company_list.test_db
 uv run python -m unittest tests.company_detail.test_extractor
+uv run python -m unittest tests.company_list.test_db
+uv run python -m unittest tests.company_list.test_pipeline
+uv run python -m unittest tests.company_insight.test_scraper
 ```
 
 测试通过不能证明真实浏览器抓取成功；真实链路仍需 `CHK-CDP` 和 `CHK-SMOKE`。
@@ -408,9 +414,20 @@ company_detail.credit_code
 → company_list.has_insight=1
 ```
 
+### 完整管道与 URL 入口
+
+完整管道按 `list → detail → insight` 执行。`--step all` 需要 `--keyword` 和 `--city`，或提供已有 `--list-json`；开始前先校验输入。洞察默认开启，显式跳过详情或洞察时，输出仍保留数据库真实待办。
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step all --keyword "AI Agent" --city 101020100 --pages 3 --db-path output/jobs.db
+uv run python -u -m scripts.boss_cdp_raw --url "QUERY_URL" --pages 3 --db-path output/jobs.db
+```
+
+URL 管道使用与分步命令相同的 `--db-path`。完整流程确实执行洞察；只需列表/详情时使用 `--no-insight`，或在列表阶段同时指定 `--no-detail --no-insight`。
+
 ### `COMPLETE`
 
-当 `pending_detail=0` 且 `pending_insight=0` 时，停止抓取，使用三表只读查询回答用户。
+当批次的 `pending_detail=0` 且 `pending_insight=0` 时，停止抓取。详情必须同时存在 `company_detail` 记录和 `has_detail=1`；洞察必须同时存在 `company_insight` 记录和 `has_insight=1`。JSON 文件存在、抓取日志显示成功或用户跳过阶段，都不能替代数据库验收。
 
 推荐连接形态：
 

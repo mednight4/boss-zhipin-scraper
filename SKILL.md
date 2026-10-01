@@ -56,10 +56,11 @@ metadata:
 | 检查环境、CDP、登录 | `uv run python -m scripts.boss_cdp_raw --check --cdp-port 9222` |
 | 检查真实搜索链路 | `uv run python -m scripts.boss_cdp_raw --smoke-test --cdp-port 9222` |
 | 查看批次、待办和 JSON 对账 | `uv run python -m scripts.company_list.pipeline --step status --db-path output/jobs.db` |
-| 批量抓 BOSS 公司详情 | `uv run python -u -m scripts.company_list.pipeline --step detail --port 9222 --db-path output/jobs.db` |
-| 批量抓爱企查洞察 | `uv run python -u -m scripts.company_list.pipeline --step insight --port 9222 --db-path output/jobs.db` |
+| 批量抓 BOSS 公司详情 | `uv run python -u -m scripts.company_list.pipeline --step detail --port 9222 --db-path output/jobs.db`（先补导入当前待办品牌的详情 JSON，再抓剩余项）|
+| 批量抓爱企查洞察 | `uv run python -u -m scripts.company_list.pipeline --step insight --port 9222 --db-path output/jobs.db`（抓取后补导入残留 JSON）|
+| 执行列表、详情和洞察完整管道 | `uv run python -u -m scripts.company_list.pipeline --step all --keyword "AI Agent" --city 101020100 --db-path output/jobs.db` |
 | 导入已有列表 JSON | `uv run python -m scripts.company_list.pipeline --step list --list-json <path> --db-path output/jobs.db` |
-| 单条爱企查查询 | `uv run python -u -m scripts.company_insight.scraper <credit_code> --port 9222` |
+| 单条爱企查查询 | `uv run python -u -m scripts.company_insight.scraper <credit_code> --port 9222 --db-path output/jobs.db` |
 
 ### 1.2 禁止事项
 
@@ -67,7 +68,7 @@ metadata:
 - 禁止绕过 `scripts/company_list/db.py` 的 `import_*_from_json()` 直接写 SQLite。
 - 禁止把 `credit_code` 当作 `brand_id`。
 - 禁止把爱企查 `company_id/pageid` 当作项目三表连接键。
-- 禁止根据 JSON 文件数量推断 `has_detail` 或 `has_insight`。
+- 禁止根据 JSON 文件数量推断 `has_detail` 或 `has_insight`；详情或洞察完成均要求结果表有对应 `brand_id` 记录且列表状态字段为 `1`。
 - 禁止把列表导入后的两个 pending 数字直接解释成 detail 和 insight 可以并行。
 - 禁止绕过登录验证、验证码和风控，不使用代理轮换、指纹伪造或验证码识别。
 - 长任务必须使用 `-u`，让 Agent 能实时读取进度。
@@ -134,17 +135,13 @@ uv run python -c "from scripts.company_list.db import compute_query_hash; print(
 
 ### 用户提供 BOSS URL
 
-优先使用 URL 管道：
+URL 管道将 URL 规范化为批次身份，复用 `--db-path` 指定的数据库，并默认执行列表、详情和洞察完整流程：
 
 ```powershell
-uv run python -u -m scripts.boss_cdp_raw --url "QUERY_URL" --pages 3 --no-detail --cdp-port 9222
+uv run python -u -m scripts.boss_cdp_raw --url "QUERY_URL" --pages 3 --db-path output/jobs.db --cdp-port 9222
 ```
 
-默认抓取列表和 BOSS 职位详情：
-
-```powershell
-uv run python -u -m scripts.boss_cdp_raw --url "QUERY_URL" --pages 3 --cdp-port 9222
-```
+显式跳过洞察时使用 `--no-insight`。仅抓列表时同时传入 `--no-detail --no-insight`；跳过的阶段不会被标记为数据库已完成，结果中仍会返回真实待办。
 
 URL 只提供查询条件，不替代 Agent 对抓取深度的判断。
 
@@ -169,10 +166,11 @@ stateDiagram-v2
     [*] --> IDLE
     IDLE --> LIST_JSON_SAVED : 列表抓取
     LIST_JSON_SAVED --> LIST_DB_IMPORTED : 导入company_list
-    LIST_DB_IMPORTED --> DETAIL_PENDING : has_detail=0
-    DETAIL_PENDING --> DETAIL_DONE : 详情导入并置has_detail=1
+    LIST_DB_IMPORTED --> DETAIL_PENDING : has_detail未完成或详情记录缺失
+    DETAIL_PENDING --> DETAIL_DONE : 详情行已入库且has_detail=1
     DETAIL_DONE --> INSIGHT_PENDING : credit_code可用
-    INSIGHT_PENDING --> COMPLETE : 洞察导入并置has_insight=1
+    DETAIL_DONE --> INSIGHT_INPUT_MISSING : 洞察待办缺少credit_code
+    INSIGHT_PENDING --> COMPLETE : 洞察行已入库且has_insight=1
     COMPLETE --> [*]
     DETAIL_PENDING --> SECURITY_BLOCKED : BOSS验证
     INSIGHT_PENDING --> INSIGHT_BLOCKED : 爱企查风控
@@ -184,9 +182,10 @@ stateDiagram-v2
 - `LIST_JSON_SAVED`：列表 JSON 已落盘但尚未导入 `company_list`。
 - `LIST_DB_IMPORTED`：列表已入库，通常有 `has_detail=0`。
 - `DETAIL_PENDING`：需要访问 BOSS 公司详情页并解析 `credit_code`。
-- `DETAIL_DONE`：详情已入库，具备继续查爱企查的输入。
+- `DETAIL_DONE`：详情待办为零；只有在详情表记录存在且 `has_detail=1` 时详情才算完成。
 - `INSIGHT_PENDING`：使用 `company_detail.credit_code` 查询爱企查。
-- `COMPLETE`：两个状态字段对应的待办都已完成。
+- `INSIGHT_INPUT_MISSING`：洞察待办缺少 `credit_code`，不能标记为全部完成。
+- `COMPLETE`：详情、洞察结果表记录及列表状态标记一致，数据库待办为零。
 - `SECURITY_BLOCKED` / `INSIGHT_BLOCKED`：退出码 `2`，必须人工处理后恢复。
 
 完整检查工具和状态分支见 [`skill/agent_workflow.md`](skill/agent_workflow.md)。
@@ -217,4 +216,4 @@ Pipeline 技术状态和数据库参考见 [`skill/pipeline.md`](skill/pipeline.
 - `README.en.md`
 - `uv.lock`
 
-改动抓取、登录或详情链路时，必须按 [`AGENTS.md`](AGENTS.md) 的要求完成单元测试和真实浏览器验证。本文档专项修改不改变业务代码，不需要修改抓取实现。
+本次修复覆盖列表、详情、洞察和 CLI 管道实现；单元测试与语法检查按 `skill/agent_workflow.md` 执行。真实 Edge 抓取验证仍须在合并前按 `AGENTS.md` 完成，本轮不执行真实抓取。

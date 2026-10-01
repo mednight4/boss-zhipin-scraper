@@ -803,46 +803,56 @@ def import_insight_json(json_path, credit_code, db=None) -> bool:
 
 
 # ── CLI 入口 ─────────────────────────────────────────────────────
-def main():
-    """CLI 入口: python -m scripts.company_insight.scraper <credit_code> [--port 9222] [--delay 15]
+def main(argv=None):
+    """抓取单条洞察；已存在 JSON 先尝试补导入，DB 未闭环时返回失败。"""
+    import argparse
 
-    抓完即落盘到 output/insight/aqc_{credit_code}.json 并尝试入库 company_insight，
-    因此可以安全地重复执行：已抓过的公司会覆盖同名 JSON 并刷新 has_insight。
-    """
     enable_line_buffering()
+    parser = argparse.ArgumentParser(
+        description="抓取爱企查公司洞察，并将 JSON 导入项目 SQLite 数据库"
+    )
+    parser.add_argument("credit_code", help="统一社会信用代码")
+    parser.add_argument("--port", type=int, default=CDP_PORT, help="CDP 端口")
+    parser.add_argument("--delay", type=float, default=15, help="公司间隔基准秒数")
+    parser.add_argument("--db-path", default=None, help="SQLite 数据库路径")
+    args = parser.parse_args(argv)
+    credit_code = args.credit_code.strip()
 
-    if len(sys.argv) < 2:
-        print("用法: python -m scripts.company_insight.scraper <统一社会信用代码> [--port 9222] [--delay 15]")
-        print("示例: python -m scripts.company_insight.scraper 91310104MA1FR5RY3N")
-        print("提示: 批量抓取请用 python -m scripts.company_list.pipeline --step insight")
-        sys.exit(1)
+    def _import(path):
+        if not args.db_path:
+            return import_insight_json(path, credit_code)
+        from scripts.company_list.db import JobDatabase
+        db = JobDatabase(args.db_path)
+        db.connect()
+        db.init_schema()
+        try:
+            return import_insight_json(path, credit_code, db=db)
+        finally:
+            db.close()
 
-    credit_code = sys.argv[1].strip()
-    cdp_port = CDP_PORT
-    delay = 15
+    print(
+        f"正在抓取爱企查: credit_code={credit_code}, port={args.port}, delay={args.delay}s",
+        flush=True,
+    )
+    out_path = insight_json_path(credit_code)
+    if out_path.exists():
+        if not _import(out_path):
+            print("已有洞察 JSON 尚不能关联到数据库；请先完成列表和详情入库。", flush=True)
+            sys.exit(1)
+        print(f"复用已有洞察 JSON 并完成数据库补导入: {out_path}", flush=True)
+        return
 
-    # 简单解析 --port 参数
-    if "--port" in sys.argv:
-        idx = sys.argv.index("--port")
-        if idx + 1 < len(sys.argv):
-            cdp_port = int(sys.argv[idx + 1])
-
-    # 简单解析 --delay 参数
-    if "--delay" in sys.argv:
-        idx = sys.argv.index("--delay")
-        if idx + 1 < len(sys.argv):
-            delay = float(sys.argv[idx + 1])
-
-    print(f"正在抓取爱企查: credit_code={credit_code}, port={cdp_port}, delay={delay}s", flush=True)
     try:
-        data = scrape_aqc_by_credit_code(credit_code, cdp_port, delay=delay)
+        data = scrape_aqc_by_credit_code(credit_code, args.port, delay=args.delay)
     except InsightBlockedError as e:
         print(f"\n🛑 {e}", flush=True)
         sys.exit(2)
 
     out_path = save_insight_json(data, credit_code)
     print(f"\nSaved: {out_path}", flush=True)
-    import_insight_json(out_path, credit_code)
+    if not _import(out_path):
+        print("JSON 已保存，但未完成数据库入库；请确认 credit_code 已存在于当前批次。", flush=True)
+        sys.exit(1)
     print(json.dumps(data, ensure_ascii=False, indent=2), flush=True)
 
 

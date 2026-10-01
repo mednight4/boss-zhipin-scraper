@@ -78,6 +78,7 @@ uv run python -m scripts.boss_cdp_raw --setup-edge --cdp-port 9222
 uv run python -m unittest tests.chrome_setup.test_chrome_setup
 uv run python -m unittest tests.company_detail.test_extractor
 uv run python -m unittest tests.company_list.test_db
+uv run python -m unittest tests.company_list.test_pipeline
 uv run python -m unittest tests.company_insight.test_scraper
 ```
 

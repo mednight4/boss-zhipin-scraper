@@ -972,6 +972,8 @@ class ChromeSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_path = str(pathlib.Path(tmp) / "jobs.json")
             result = self._run_scrape_list(module, cdp, output_path, pages=2)
+            with open(output_path, encoding="utf-8") as f:
+                saved = json.load(f)
 
         # 两页各 2 条，全部来自被动捕获（无注入 XHR：evaluate 只用于滚动）
         self.assertEqual(result["total"], 4)
@@ -984,6 +986,11 @@ class ChromeSetupTests(unittest.TestCase):
         ]
         self.assertTrue(evaluate_bodies)
         self.assertFalse(any("XMLHttpRequest" in js for js in evaluate_bodies))
+        from scripts.company_list.db import build_query_url, compute_query_hash
+        expected_url = build_query_url("Java", "101020100", {})
+        self.assertEqual(saved["city_code"], "101020100")
+        self.assertEqual(saved["query_url"], expected_url)
+        self.assertEqual(saved["query_hash"], compute_query_hash(expected_url))
 
     def test_scrape_list_gates_on_risk_control_first_response(self):
         module = load_module()

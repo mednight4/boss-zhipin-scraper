@@ -1,4 +1,7 @@
-"""BOSS 公司详情页爬虫：CDP 导航 → innerText 提取 → 结构化 JSON。"""
+"""BOSS 公司详情页爬虫：CDP 导航 → innerText 提取 → 结构化 JSON。
+
+独立 CLI 仅抓取并保存 JSON，不更新 SQLite 状态；完整数据库任务应使用 pipeline。
+"""
 from __future__ import annotations
 
 import json
@@ -563,6 +566,7 @@ def _main():
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(f"Saved: {out_path}")
+    print("仅保存详情 JSON，未更新 SQLite 的 has_detail；完整数据库任务请使用 pipeline --step detail。")
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 

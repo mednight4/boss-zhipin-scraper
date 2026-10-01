@@ -247,5 +247,38 @@ class EnableLineBufferingTests(unittest.TestCase):
             sys.stdout = original
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+class InsightCliClosureTests(unittest.TestCase):
+    """单条 CLI 的退出码反映 JSON 是否已真正入库。"""
+
+    CREDIT_CODE = "91310104MA1FR5RY3N"
+
+    def test_saved_json_without_database_import_exits_nonzero(self):
+        from unittest.mock import patch
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(scraper, "OUTPUT_DIR", Path(tmpdir)), \
+                    patch.object(scraper, "scrape_aqc_by_credit_code", return_value={
+                        "credit_code": self.CREDIT_CODE,
+                        "company_name": "测试公司",
+                    }), \
+                    patch.object(scraper, "import_insight_json", return_value=False):
+                with self.assertRaises(SystemExit) as ctx:
+                    scraper.main([self.CREDIT_CODE])
+
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertTrue((Path(tmpdir) / f"aqc_{self.CREDIT_CODE}.json").exists())
+
+    def test_existing_json_is_imported_before_any_new_scrape(self):
+        from unittest.mock import patch
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / f"aqc_{self.CREDIT_CODE}.json"
+            out_path.write_text('{"credit_code":"' + self.CREDIT_CODE + '"}', encoding="utf-8")
+            with patch.object(scraper, "OUTPUT_DIR", Path(tmpdir)), \
+                    patch.object(scraper, "import_insight_json", return_value=True), \
+                    patch.object(scraper, "scrape_aqc_by_credit_code", side_effect=AssertionError("不得重抓")):
+                scraper.main([self.CREDIT_CODE])

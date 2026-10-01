@@ -40,10 +40,11 @@ uv run python -u -m scripts.boss_cdp_raw --keyword "AI Agent" --city 上海 --pa
 uv run python -m scripts.job_summary --top 15
 ```
 
-也可以使用 BOSS 查询 URL：
+也可以使用 BOSS 查询 URL。URL 模式默认用 `--db-path` 指定数据库并执行列表、详情、爱企查洞察完整管道；若只抓列表，可同时跳过详情和洞察：
 
 ```powershell
-uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --no-detail --cdp-port 9222
+uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --db-path output/jobs.db --cdp-port 9222
+uv run python -u -m scripts.boss_cdp_raw --url "https://www.zhipin.com/web/geek/jobs?city=101020100&query=AI%20Agent" --pages 3 --no-detail --no-insight --db-path output/jobs.db --cdp-port 9222
 ```
 
 支持全国城市。查看支持的城市：
@@ -331,6 +332,8 @@ uv run python -m scripts.company_detail.extractor <company_url>
 uv run python -m scripts.company_detail.extractor "https://www.zhipin.com/gongsi/abc123.html"
 ```
 
+独立命令只抓取并保存 JSON，不会写入 `company_detail` 或更新 `company_list.has_detail`。需要闭环入库时使用上文的 `--step detail` 管道入口。
+
 提取字段包括：基本信息（在招职位数、BOSS 数、公司名、融资阶段、规模、行业）、热招职位列表（含薪资/标题/经验/学历/地点/在线状态）、公司简介、官网链接、产品介绍、工商信息（企业名称、法定代表人、成立时间、注册资本、注册地址等 15 字段）、公司地址、工作时间及福利、招聘人员列表、高管介绍。
 
 程序库调用：
@@ -360,6 +363,15 @@ jobs = parse_hot_jobs(page_text)
 company_list.encrypt_brand_id = company_detail.brand_id
 company_list.encrypt_brand_id = company_insight.brand_id
 ```
+
+完整管道也可以直接从关键字和城市执行，默认包含列表、详情和洞察。`--step all` 参数不足时会在抓取前报错；输入已有列表 JSON 时可用 `--list-json` 继续。
+
+```powershell
+uv run python -u -m scripts.company_list.pipeline --step all --keyword "AI Agent" --city 101020100 --pages 3 --db-path output/jobs.db
+uv run python -u -m scripts.boss_cdp_raw --db --step all --keyword "AI Agent" --city 101020100 --pages 3 --db-path output/jobs.db
+```
+
+URL 与分步入口使用同一数据库：`--url` 模式通过 `--db-path` 指定 SQLite；完整模式默认执行洞察，显式跳过时使用 `--no-insight`。跳过阶段仍保留数据库待办，不会返回虚假的全部完成状态。
 
 查看当前状态：
 
@@ -391,12 +403,12 @@ uv run python -u -m scripts.company_insight.scraper 91310104MA1FR5RY3N --port 92
 |------|------|
 | `[1] 查询批次` | 有哪几批搜索，关键词/城市/职位数/最早入库时间 |
 | `[2] 总体进度` | 职位数、唯一公司数、详情与洞察的已完成/待爬计数 |
-| `[3] 待爬详情` | `has_detail=0` 的 brand_id 清单 |
-| `[4] 待爬洞察` | 已经具备 `credit_code` 的洞察待办；缺少详情输入时不会假定洞察可执行 |
+| `[3] 待爬详情` | `has_detail=0` 或缺少 `company_detail` 行的 brand_id 清单 |
+| `[4] 待爬洞察` | 详情状态已完成但洞察尚未闭环的公司；可执行项需有 `credit_code`，缺失项单独说明 |
 | `[5] 洞察 JSON 对账` | 规范命名 / 孤儿 / 旧命名 / 无法解析 / 重复 `credit_code` |
 | `[6] 最近入库的洞察` | 最近 5 家入库时间，用于判断数据新鲜度 |
 
-洞察 JSON 统一落在 `output/insight/aqc_{credit_code}.json`。只有在详情产生 `credit_code` 后，洞察管道才有可执行输入。
+洞察 JSON 统一落在 `output/insight/aqc_{credit_code}.json`。只有在详情产生 `credit_code` 后，洞察管道才有可执行输入。JSON 文件存在不代表完成：详情/洞察必须分别同时具备结果表中的 `brand_id` 行与列表表对应的 `has_detail=1` / `has_insight=1`。独立详情提取器只保存 JSON；单条洞察 CLI 若 JSON 未能入库会以退出码 `1` 返回，并可用 `--db-path` 指定数据库。已有单条洞察 JSON 会先尝试补导入，成功后不重复抓取。
 
 Agent 的详细检查工具、状态路由和停止条件见 [`skill/agent_workflow.md`](skill/agent_workflow.md)。
 
