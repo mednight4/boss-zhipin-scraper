@@ -10,7 +10,8 @@
 
 - `AGENTS.md`：开发约束、代码边界、测试、合规和提交流程。
 - `SKILL.md`：Agent Skill 的最小启动协议和文档路由。
-- `skill/agent_workflow.md`：Agent 的检查工具、状态判断、精确命令和恢复流程。
+- `skill/agent_workflow.md`：抓取、恢复和管道状态检查流程。
+- `skill/query_workflow.md`：已完成数据库的只读筛选流程。
 - `README.md` / `README.en.md`：面向用户的安装、CLI、参数、产物和风险说明。
 - `skill/install.md`：Skill 安装和文件分发。
 - `skill/reference.md`：参数、输出格式和只读查询参考。
@@ -24,7 +25,8 @@
 scripts/boss_cdp_raw.py       核心抓取、CDP、CLI 主入口
 scripts/job_summary.py        抓取结果到求职分析摘要
 scripts/company_detail/       BOSS 公司详情抓取和纯文本解析
-scripts/company_list/db.py    SQLite 数据访问层
+scripts/company_list/db.py    SQLite 数据访问层及只读筛选数据方法
+scripts/company_list/query.py 已完成数据的只读 CLI 查询入口
 scripts/company_list/pipeline.py 分阶段管道和状态入口
 scripts/company_insight/      爱企查洞察抓取
  data/city_codes.json         城市码表

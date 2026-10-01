@@ -24,7 +24,9 @@ company_detail.credit_code    → 爱企查搜索输入
 Aiqicha company_id/pageid     → 爱企查页面导航标识
 ```
 
-## 状态机
+`company_insight.employee_count` 是爱企查公开的“参保人数”，数据库字段为可空整数。它与 BOSS `company_scale` 不同；NULL 表示缺失/无法确认，0 只表示页面明确给出 0。筛选入口及回答口径见 [`query_workflow.md`](query_workflow.md)。
+
+## Pipeline 状态
 
 ```mermaid
 stateDiagram-v2
@@ -158,7 +160,8 @@ company_detail.credit_code = Aiqicha company_id
 | BOSS 风控 | `SecurityCheckError`，退出码 2 | 人工处理后重跑原命令 |
 | 爱企查风控 | `InsightBlockedError`，退出码 2 | 人工处理后重跑洞察命令 |
 
-## 文件路径
+`company_insight.employee_count` 是爱企查公开的“参保人数”，以可空整数存储；它不是公司总员工数或 BOSS 企业规模。`NULL` 表示缺失/无法确认，`0` 仅表示页面明确显示 0。
+
 
 | 用途 | 路径 |
 |---|---|

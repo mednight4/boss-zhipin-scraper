@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)
-![Version](https://img.shields.io/badge/version-2.4.0-orange.svg)
+![Version](https://img.shields.io/badge/version-2.5.0-orange.svg)
 
 A lightweight **BOSS Zhipin scraper / crawler** (a.k.a. spider) for job listings on [zhipin.com](https://www.zhipin.com). Instead of driving a heavy Selenium/Playwright browser, it connects to your **already-logged-in Chrome or Microsoft Edge** via the Chrome DevTools Protocol (CDP), reuses the real session, and calls the in-page search API directly — bypassing the front-end font-based anti-scraping so you get the **plaintext salary** in every record. Output goes to JSON / CSV, plus an aggregated salary/skill analysis and a copy-paste prompt for polishing your job-application materials. Also ships as a Hermes Agent Skill.
 
@@ -378,6 +378,16 @@ uv run python -u -m scripts.company_insight.scraper 91310104MA1FR5RY3N --port 92
 ```
 
 `--step status` prints six sections answering which companies were scraped, whether data exists, when it was imported, and what remains:
+
+Filter completed database results by listing the available batches first, then confirm and select a `query_hash`:
+
+```powershell
+uv run python -m scripts.company_list.query --db-path output/jobs.db --list-batches --format json
+uv run python -m scripts.company_list.query --db-path output/jobs.db --query-hash QUERY_HASH --employee-min 50 --employee-max 100 --format json
+```
+
+The query entry opens the database read-only and does not scrape or change pipeline state. `company_insight.employee_count` is Aiqicha's publicly listed insured-person count, stored as a nullable integer after migration. It is distinct from BOSS company scale. See [`skill/query_workflow.md`](skill/query_workflow.md) for query semantics and interpretation.
+
 
 | Section | Contents |
 |---------|----------|

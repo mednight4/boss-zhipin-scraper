@@ -18,7 +18,13 @@ from scripts.company_insight import scraper  # noqa: E402
 
 
 class DetectBlockPageTests(unittest.TestCase):
-    """验证码/风控页识别 —— 命中必须报出，正常页必须不报。"""
+    """验证码/风控页识别与洞察字段规范化。"""
+
+    def test_employee_count_is_normalized(self):
+        self.assertEqual(scraper.normalize_employee_count("28人"), 28)
+        self.assertEqual(scraper.normalize_employee_count("0"), 0)
+        self.assertIsNone(scraper.normalize_employee_count("暂无"))
+
 
     def test_normal_detail_page_is_not_blocked(self):
         self.assertIsNone(

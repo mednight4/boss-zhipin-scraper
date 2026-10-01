@@ -1,7 +1,6 @@
 # Agent 工作流与检查工具
 
-> 本文件是 Agent 的执行协议，不是用户教程。
-> Agent 遇到 BOSS 职位查询、抓取、恢复、状态检查或结果分析任务时，按本文顺序执行。
+Agent 遇到新抓取、继续/恢复抓取或管道进度查询时，按本文执行。只读分析已完成数据库时改用 [`query_workflow.md`](query_workflow.md)：不要跑 CDP 检查、不要启动 `--step status`，除非用户同时需要管道状态。
 
 ## 0. 当前事实契约
 
@@ -252,6 +251,7 @@ uv run python -c "from scripts.company_list.pipeline import PipelineState; p=Pip
 - `RESUME_REFRESH`：详情和洞察待办都已解决，但列表批次超出新鲜度窗口。
 - `SKIP`：数据库待办均为 0 且批次仍新鲜；不能只凭 JSON 文件或最近一条日志判断。
 
+- Agent 进行已完成数据库筛选时先调用 `--list-batches` 核对批次元数据，再调用 `--query-hash` 或 `--query-url` 执行范围查询。
 ### CHK-STATUS：检查统一业务状态
 
 适用情境：每次准备行动前、长任务结束后、异常中断后、用户询问“现在到哪了”。

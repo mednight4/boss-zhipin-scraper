@@ -1,11 +1,11 @@
-# BOSS直聘爬虫 · 职位抓取工具 v2.4（Chrome/Edge CDP / 明文薪资）
+# BOSS直聘爬虫 · 职位抓取工具 v2.5（Chrome/Edge CDP / 明文薪资）
 
 > 🌐 English documentation: [README.en.md](./README.en.md)
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)
-![Version](https://img.shields.io/badge/version-2.4.0-orange.svg)
+![Version](https://img.shields.io/badge/version-2.5.0-orange.svg)
 
 一个轻量的 **BOSS直聘爬虫（spider / crawler / scraper）**：通过 Chrome DevTools Protocol 连接本地已登录的 Chrome 或 Microsoft Edge，复用真实登录态调用 zhipin.com 搜索 API，绕过前端字体反爬，输出含**明文薪资**的职位数据（JSON / CSV），并生成薪资分布、技能词频和求职材料优化提示词。同时作为 Hermes Agent Skill 提供。
 
@@ -397,8 +397,16 @@ uv run python -u -m scripts.company_list.pipeline --step insight --port 9222 --i
 uv run python -u -m scripts.company_insight.scraper 91310104MA1FR5RY3N --port 9222 --delay 15
 ```
 
-`--step status` 输出六个区块，回答「哪些公司查过了 / 有数据吗 / 什么时候查的 / 需要重新查吗」：
+筛选已完成数据库中的职位和参保人数时，先列出批次，再核对并选择 `query_hash`：
 
+```powershell
+uv run python -m scripts.company_list.query --db-path output/jobs.db --list-batches --format json
+uv run python -m scripts.company_list.query --db-path output/jobs.db --query-hash QUERY_HASH --employee-min 50 --employee-max 100 --format json
+```
+
+查询入口使用只读连接，不触发抓取或修改管道状态。`company_insight.employee_count` 是爱企查公开的“参保人数”，迁移后以可空整数保存；它与 BOSS 企业规模不是同一指标。查询流程和结果解释见 [`skill/query_workflow.md`](skill/query_workflow.md)。
+
+`--step status` 输出六个区块，回答「哪些公司查过了 / 有数据吗 / 什么时候查的 / 需要重新查吗」：
 | 区块 | 内容 |
 |------|------|
 | `[1] 查询批次` | 有哪几批搜索，关键词/城市/职位数/最早入库时间 |

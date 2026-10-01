@@ -22,19 +22,20 @@ uv run python -m scripts.boss_cdp_raw --setup-edge --cdp-port 9222
 
 ```text
 SKILL.md                         Agent 最小启动协议
-skill/agent_workflow.md         Agent 检查工具和执行状态协议
+skill/agent_workflow.md         Agent 抓取、恢复和管道检查协议
+skill/query_workflow.md         已完成数据库的只读筛选协议
 skill/install.md                 安装说明
 skill/reference.md               参数和输出参考
 skill/pipeline.md                Pipeline 和数据库契约
 scripts/boss_cdp_raw.py          核心抓取入口
 scripts/job_summary.py            摘要入口
 scripts/company_detail/           BOSS 公司详情模块
-scripts/company_list/             SQLite 数据访问和管道模块
+scripts/company_list/             SQLite 数据访问和管道模块（含只读 query.py）
 scripts/company_insight/          爱企查洞察模块
 data/city_codes.json              城市码表
 ```
 
-`skill/agent_workflow.md` 是 Agent 执行查询任务所需的关键参考，不能只安装 `SKILL.md` 而遗漏它。
+`skill/agent_workflow.md` 是抓取/恢复任务的关键参考；已有数据库的只读筛选任务使用 `skill/query_workflow.md`。安装时两个文件都需要分发。
 
 ## 3. 本地复制安装
 
@@ -79,11 +80,12 @@ npx skills add eatmoreduck/boss-zhipin-scraper
 ```text
 SKILL.md
 skill/agent_workflow.md
+skill/query_workflow.md
 skill/reference.md
 skill/pipeline.md
 scripts/boss_cdp_raw.py
 scripts/company_list/db.py
-scripts/company_list/pipeline.py
+scripts/company_list/query.py
 scripts/company_insight/scraper.py
 data/city_codes.json
 ```
@@ -94,7 +96,8 @@ data/city_codes.json
 uv run python -m scripts.boss_cdp_raw --version
 uv run python -m scripts.boss_cdp_raw --help
 uv run python -m scripts.company_list.pipeline --help
-uv run python -c "import scripts.company_list.db, scripts.company_list.pipeline, scripts.company_insight.scraper; print('SKILL_FILES_OK')"
+uv run python -m scripts.company_list.query --help
+uv run python -c "import scripts.company_list.db, scripts.company_list.pipeline, scripts.company_list.query, scripts.company_insight.scraper; print('SKILL_FILES_OK')"
 ```
 
 验证失败时先检查文件是否完整复制，再执行 `uv sync`。不要新建临时检查脚本。

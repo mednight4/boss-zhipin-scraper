@@ -20,6 +20,7 @@ from scripts.boss_cdp_raw import (  # noqa: E402
     create_page_session,
     enable_line_buffering,
 )
+from scripts.company_list.db import normalize_employee_count  # noqa: E402
 
 SEARCH_URL_TEMPLATE = "https://aiqicha.baidu.com/s?q={credit_code}"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "insight"
@@ -704,7 +705,9 @@ def scrape_aqc_by_credit_code(credit_code: str, cdp_port: int = CDP_PORT, delay:
             "registration_number": _clean_field_value("registration_number", business.get("registration_number", "")),
             "org_code": _clean_field_value("org_code", business.get("org_code", "")),
             "taxpayer_id": _clean_field_value("taxpayer_id", business.get("taxpayer_id", "")),
-            "employee_count": _clean_field_value("employee_count", business.get("employee_count", "")),
+            "employee_count": normalize_employee_count(
+                _clean_field_value("employee_count", business.get("employee_count", ""))
+            ),
             "former_name": _clean_field_value("former_name", business.get("former_name", "")),
             # 联系信息
             "phone": _clean_field_value("phone", contact_info.get("phone", "")),

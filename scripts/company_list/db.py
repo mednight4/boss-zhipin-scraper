@@ -2,10 +2,11 @@
 
 import json
 import os
+import re
 import sqlite3
 import hashlib
 from datetime import datetime
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 OUTPUT_DIR = os.path.join(PACKAGE_DIR, "output")
@@ -13,7 +14,83 @@ QUERY_DIR = os.path.join(OUTPUT_DIR, "query")
 COMPANY_DIR = os.path.join(OUTPUT_DIR, "company")
 DEFAULT_DB_PATH = os.path.join(OUTPUT_DIR, "jobs.db")
 
-SCHEMA_SQL = """
+
+def normalize_employee_count(value):
+    """将爱企查“参保人数”规范化为可空整数。
+
+    只接受整个值由一个非负整数构成（允许末尾的“人”和千位分隔符），
+    避免从“约 100 人”或其他混杂文本中猜测数字。缺失或无法确认时返回 None。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value >= 0 else None
+
+    text = str(value).strip()
+    if not text or text in {"-", "—", "暂无", "未公示", "未披露", "未知"}:
+        return None
+    text = re.sub(r"\s+", "", text)
+    if text.endswith("人"):
+        text = text[:-1]
+    text = text.replace("，", ",")
+    if not re.fullmatch(r"\d{1,3}(?:,?\d{3})*|\d+", text):
+        return None
+    try:
+        result = int(text.replace(",", ""))
+    except ValueError:
+        return None
+    return result if result >= 0 else None
+
+
+COMPANY_INSIGHT_COLUMNS = [
+    "id", "brand_id", "company_list_id", "company_name", "credit_code",
+    "legal_person", "registered_capital", "establish_date", "business_scope",
+    "business_status", "company_type", "industry", "registered_address",
+    "business_term", "registration_authority", "employee_count", "scale",
+    "phone", "email", "website", "description", "former_name", "tags_json",
+    "products_json", "top_info_json", "business_info_raw_json", "cap_json",
+    "risk_json", "url", "create_time", "scraped_at",
+]
+
+COMPANY_INSIGHT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS company_insight (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id        TEXT NOT NULL UNIQUE,
+    company_list_id INTEGER,
+    company_name    TEXT,
+    credit_code     TEXT,
+    legal_person    TEXT,
+    registered_capital TEXT,
+    establish_date  TEXT,
+    business_scope  TEXT,
+    business_status TEXT,
+    company_type    TEXT,
+    industry        TEXT,
+    registered_address TEXT,
+    business_term   TEXT,
+    registration_authority TEXT,
+    employee_count  INTEGER,
+    scale           TEXT,
+    phone           TEXT,
+    email           TEXT,
+    website         TEXT,
+    description     TEXT,
+    former_name     TEXT,
+    tags_json       TEXT,
+    products_json   TEXT,
+    top_info_json   TEXT,
+    business_info_raw_json TEXT,
+    cap_json        TEXT,
+    risk_json       TEXT,
+    url             TEXT,
+    create_time     TEXT NOT NULL,
+    scraped_at      TEXT
+);
+"""
+
+SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS company_list (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id          TEXT NOT NULL UNIQUE,
@@ -97,39 +174,7 @@ CREATE TABLE IF NOT EXISTS company_detail (
 );
 CREATE INDEX IF NOT EXISTS idx_cd_brand_id ON company_detail(brand_id);
 
-CREATE TABLE IF NOT EXISTS company_insight (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    brand_id        TEXT NOT NULL UNIQUE,
-    company_list_id INTEGER,
-    company_name    TEXT,
-    credit_code     TEXT,
-    legal_person    TEXT,
-    registered_capital TEXT,
-    establish_date  TEXT,
-    business_scope  TEXT,
-    business_status TEXT,
-    company_type    TEXT,
-    industry        TEXT,
-    registered_address TEXT,
-    business_term   TEXT,
-    registration_authority TEXT,
-    employee_count  TEXT,
-    scale           TEXT,
-    phone           TEXT,
-    email           TEXT,
-    website         TEXT,
-    description     TEXT,
-    former_name     TEXT,
-    tags_json       TEXT,
-    products_json   TEXT,
-    top_info_json   TEXT,
-    business_info_raw_json TEXT,
-    cap_json        TEXT,
-    risk_json       TEXT,
-    url             TEXT,
-    create_time     TEXT NOT NULL,
-    scraped_at      TEXT
-);
+{COMPANY_INSIGHT_TABLE_SQL}
 CREATE INDEX IF NOT EXISTS idx_ci_brand_id ON company_insight(brand_id);
 CREATE INDEX IF NOT EXISTS idx_ci_credit_code ON company_insight(credit_code);
 """
@@ -153,24 +198,78 @@ def compute_query_hash(query_url):
 class JobDatabase:
     """SQLite 三表桥接的数据访问层."""
 
-    def __init__(self, db_path=None):
+    def __init__(self, db_path=None, read_only=False):
         self.db_path = db_path or DEFAULT_DB_PATH
+        self.read_only = read_only
         self.conn = None
 
     def connect(self):
-        """建立连接（幂等）."""
+        """建立连接（幂等）；只读模式不会创建文件或切换 WAL."""
         if self.conn is None:
-            os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
-            self.conn = sqlite3.connect(self.db_path)
+            if self.read_only:
+                absolute_path = os.path.abspath(self.db_path)
+                if not os.path.isfile(absolute_path):
+                    raise FileNotFoundError(f"数据库不存在: {absolute_path}")
+                uri_path = quote(absolute_path.replace(os.sep, "/"), safe="/:")
+                uri = f"file:{uri_path}?mode=ro"
+                self.conn = sqlite3.connect(uri, uri=True)
+                self.conn.execute("PRAGMA query_only=ON")
+            else:
+                os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
+                self.conn = sqlite3.connect(self.db_path)
+                self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.row_factory = sqlite3.Row
-            self.conn.execute("PRAGMA journal_mode=WAL")
         return self
 
     def init_schema(self):
-        """幂等建表."""
+        """幂等建表，并将旧的 employee_count TEXT 列迁移为 INTEGER."""
         self.connect()
         self.conn.executescript(SCHEMA_SQL)
+        self._migrate_employee_count_column()
         self.conn.commit()
+
+    def _migrate_employee_count_column(self):
+        """事务内重建旧 company_insight 表，保证 employee_count 类型一致。"""
+        row = self.conn.execute(
+            "SELECT type FROM pragma_table_info('company_insight') "
+            "WHERE name = 'employee_count'"
+        ).fetchone()
+        if not row or str(row[0]).upper() == "INTEGER":
+            return
+
+        quoted_columns = ", ".join(f'"{column}"' for column in COMPANY_INSIGHT_COLUMNS)
+        new_table = "company_insight__employee_count_migration"
+        self.conn.execute("BEGIN")
+        try:
+            self.conn.execute(f"DROP TABLE IF EXISTS {new_table}")
+            self.conn.execute(COMPANY_INSIGHT_TABLE_SQL.replace(
+                "company_insight", new_table, 1
+            ))
+            select_columns = ", ".join(
+                "employee_count" if column == "employee_count" else f'"{column}"'
+                for column in COMPANY_INSIGHT_COLUMNS
+            )
+            rows = self.conn.execute(
+                f"SELECT {select_columns} FROM company_insight"
+            ).fetchall()
+            placeholders = ", ".join("?" for _ in COMPANY_INSIGHT_COLUMNS)
+            for source in rows:
+                values = list(source)
+                values[COMPANY_INSIGHT_COLUMNS.index("employee_count")] = normalize_employee_count(
+                    values[COMPANY_INSIGHT_COLUMNS.index("employee_count")]
+                )
+                self.conn.execute(
+                    f"INSERT INTO {new_table} ({quoted_columns}) VALUES ({placeholders})",
+                    values,
+                )
+            self.conn.execute("DROP TABLE company_insight")
+            self.conn.execute(f"ALTER TABLE {new_table} RENAME TO company_insight")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ci_brand_id ON company_insight(brand_id)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ci_credit_code ON company_insight(credit_code)")
+            self.conn.commit()
+        except (sqlite3.Error, TypeError, ValueError):
+            self.conn.rollback()
+            raise
 
     def close(self):
         """关闭连接."""
@@ -502,7 +601,7 @@ class JobDatabase:
                 data.get("registered_address", ""),
                 data.get("business_term", ""),
                 data.get("registration_authority", ""),
-                data.get("employee_count", ""),
+                normalize_employee_count(data.get("employee_count")),
                 data.get("scale", ""),
                 data.get("phone", ""),
                 data.get("email", ""),
@@ -668,7 +767,7 @@ class JobDatabase:
 
         cur.execute(
             """SELECT COUNT(*) as job_count,
-                      COUNT(DISTINCT encrypt_brand_id) as company_count,
+                      COUNT(DISTINCT NULLIF(encrypt_brand_id, '')) as company_count,
                       MIN(create_time) as oldest_create_time
                FROM company_list WHERE query_hash = ?""",
             (query_hash,),
@@ -745,6 +844,200 @@ class JobDatabase:
             "insight_input_ready": insight_input_ready,
             "insight_input_missing": insight_input_missing,
         }
+
+    def _require_read_only(self):
+        if not self.read_only:
+            raise RuntimeError("已完成数据查询必须通过 JobDatabase(read_only=True) 执行")
+
+    def get_query_batch_info(self, query_hash: str):
+        """只读读取一个批次的可展示元信息，不改变数据库状态。"""
+        self._require_read_only()
+        self.connect()
+        row = self.conn.execute(
+            """SELECT MIN(query_url) AS query_url,
+                      MIN(keyword) AS keyword,
+                      MIN(city) AS city,
+                      MIN(city_code) AS city_code,
+                      MIN(filters_json) AS filters_json,
+                      COUNT(*) AS job_count,
+                      COUNT(DISTINCT NULLIF(encrypt_brand_id, '')) AS company_count,
+                      MIN(scraped_at) AS scraped_at,
+                      MIN(create_time) AS oldest_create_time
+               FROM company_list
+               WHERE query_hash = ?""",
+            (query_hash,),
+        ).fetchone()
+        if not row or row["job_count"] == 0:
+            return None
+        info = dict(row)
+        progress = self.get_query_info(query_hash)
+        if progress:
+            info.update(progress)
+        insight_done = self.conn.execute(
+            """SELECT COUNT(DISTINCT cl.encrypt_brand_id)
+                 FROM company_list AS cl
+                 JOIN company_insight AS ci
+                   ON cl.encrypt_brand_id = ci.brand_id
+                WHERE cl.query_hash = ?
+                  AND cl.encrypt_brand_id != ''
+                  AND cl.has_detail = 1
+                  AND cl.has_insight = 1""",
+            (query_hash,),
+        ).fetchone()[0]
+        info["insight_done"] = insight_done
+        return info
+
+    def query_jobs_by_employee_count(
+        self, query_hash: str, employee_min=None, employee_max=None,
+        limit=100, offset=0,
+    ):
+        """只读查询批次内符合参保人数范围的职位记录。
+
+        结果保持 company_list 的职位粒度，同一公司对应多个职位时允许多行。
+        调用方应使用 read_only=True 的 JobDatabase 实例，避免查询入口产生写入。
+        """
+        self._require_read_only()
+        self.connect()
+        if limit is not None and (not isinstance(limit, int) or limit < 1):
+            raise ValueError("limit 必须是正整数或 None")
+        if not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset 必须是非负整数")
+        for name, value in (("employee_min", employee_min), ("employee_max", employee_max)):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise ValueError(f"{name} 必须是非负整数")
+        if (
+            employee_min is not None
+            and employee_max is not None
+            and employee_min > employee_max
+        ):
+            raise ValueError("employee_min 不能大于 employee_max")
+
+        column_type = self.conn.execute(
+            "SELECT type FROM pragma_table_info('company_insight') "
+            "WHERE name = 'employee_count'"
+        ).fetchone()
+        if column_type and str(column_type[0]).upper() != "INTEGER":
+            raise RuntimeError(
+                "company_insight.employee_count 尚未迁移为 INTEGER，请先初始化可写数据库"
+            )
+
+        conditions = [
+            "cl.query_hash = ?",
+            "cl.has_detail = 1",
+            "cl.has_insight = 1",
+            "ci.employee_count IS NOT NULL",
+        ]
+        params = [query_hash]
+        if employee_min is not None:
+            conditions.append("ci.employee_count >= ?")
+            params.append(employee_min)
+        if employee_max is not None:
+            conditions.append("ci.employee_count <= ?")
+            params.append(employee_max)
+        where_sql = " AND ".join(conditions)
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+        rows = self.conn.execute(
+            f"""SELECT cl.query_hash, cl.job_id, cl.title, cl.salary,
+                          cl.location, cl.job_link, cl.company_link,
+                          cl.keyword, cl.city, cl.city_code, cl.filters_json,
+                          cl.encrypt_brand_id, cl.has_detail, cl.has_insight,
+                          cd.company_name AS boss_company_name,
+                          cd.url AS boss_detail_url,
+                          ci.company_name AS insight_company_name,
+                          ci.employee_count, ci.url AS aiqicha_url,
+                          ci.scraped_at AS insight_scraped_at
+                   FROM company_list AS cl
+                   LEFT JOIN company_detail AS cd
+                     ON cl.encrypt_brand_id = cd.brand_id
+                   LEFT JOIN company_insight AS ci
+                     ON cl.encrypt_brand_id = ci.brand_id
+                   WHERE {where_sql}
+                   ORDER BY cl.id{limit_sql}""",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_jobs_by_employee_count(
+        self, query_hash: str, employee_min=None, employee_max=None
+    ):
+        """返回只读员工人数筛选的职位记录总数。"""
+        # 使用同一条件构造逻辑，避免分页结果和总数的边界不一致。
+        self._require_read_only()
+        self.connect()
+        for name, value in (("employee_min", employee_min), ("employee_max", employee_max)):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise ValueError(f"{name} 必须是非负整数")
+        if employee_min is not None and employee_max is not None and employee_min > employee_max:
+            raise ValueError("employee_min 不能大于 employee_max")
+        column_type = self.conn.execute(
+            "SELECT type FROM pragma_table_info('company_insight') "
+            "WHERE name = 'employee_count'"
+        ).fetchone()
+        if column_type and str(column_type[0]).upper() != "INTEGER":
+            raise RuntimeError(
+                "company_insight.employee_count 尚未迁移为 INTEGER，请先初始化可写数据库"
+            )
+        conditions = [
+            "cl.query_hash = ?",
+            "cl.has_detail = 1",
+            "cl.has_insight = 1",
+            "ci.employee_count IS NOT NULL",
+        ]
+        params = [query_hash]
+        if employee_min is not None:
+            conditions.append("ci.employee_count >= ?")
+            params.append(employee_min)
+        if employee_max is not None:
+            conditions.append("ci.employee_count <= ?")
+            params.append(employee_max)
+        where_sql = " AND ".join(conditions)
+        row = self.conn.execute(
+            f"""SELECT COUNT(*)
+                   FROM company_list AS cl
+                   LEFT JOIN company_insight AS ci
+                     ON cl.encrypt_brand_id = ci.brand_id
+                   WHERE {where_sql}""",
+            params,
+        ).fetchone()
+        return int(row[0])
+
+    def list_query_batch_summaries(self):
+        """只读返回所有批次的筛选条件、规模和完成状态。"""
+        self._require_read_only()
+        self.connect()
+        rows = self.conn.execute(
+            """SELECT query_hash, MIN(query_url) AS query_url,
+                      MIN(keyword) AS keyword, MIN(city) AS city,
+                      MIN(city_code) AS city_code, MIN(filters_json) AS filters_json,
+                      COUNT(*) AS job_count,
+                      COUNT(DISTINCT NULLIF(encrypt_brand_id, '')) AS company_count,
+                      MIN(scraped_at) AS scraped_at,
+                      MIN(create_time) AS oldest_create_time
+               FROM company_list
+               GROUP BY query_hash
+               ORDER BY MIN(create_time) DESC"""
+        ).fetchall()
+        summaries = []
+        for row in rows:
+            summary = dict(row)
+            progress = self.get_query_info(summary["query_hash"]) or {}
+            summary.update(progress)
+            summary["insight_done"] = self.conn.execute(
+                """SELECT COUNT(DISTINCT cl.encrypt_brand_id)
+                     FROM company_list AS cl
+                     JOIN company_insight AS ci
+                       ON cl.encrypt_brand_id = ci.brand_id
+                    WHERE cl.query_hash = ?
+                      AND cl.encrypt_brand_id != ''
+                      AND cl.has_detail = 1 AND cl.has_insight = 1""",
+                (summary["query_hash"],),
+            ).fetchone()[0]
+            summaries.append(summary)
+        return summaries
 
     def get_all_query_hashes(self):
         """返回所有已有查询批次的摘要列表。"""

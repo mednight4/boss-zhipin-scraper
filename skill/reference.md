@@ -1,6 +1,6 @@
 # 参数与输出参考
 
-> Agent 的执行顺序和检查工具见 [`agent_workflow.md`](agent_workflow.md)。本文件只描述参数、输出和只读数据关系。
+> Agent 的执行顺序和抓取检查工具见 [`agent_workflow.md`](agent_workflow.md)。已完成数据库只读筛选见 [`query_workflow.md`](query_workflow.md)。本文件描述 CLI 参数、输出和数据字段来源。
 
 ## CLI 入口
 
@@ -21,7 +21,6 @@ uv run python -m scripts.company_insight.scraper ...
 | `--keyword` | BOSS 搜索关键词 |
 | `--city` | 中文城市名或 9 位 city_code |
 | `--pages` | 列表抓取页数，受 `BOSS_MAX_PAGES` 限制 |
-| `--format` | `json` 或 `csv` |
 | `--detail` | 抓取职位详情，默认开启 |
 | `--no-detail` | 不抓取职位详情 |
 | `--max-details` | 职位详情数量上限 |
@@ -31,6 +30,12 @@ uv run python -m scripts.company_insight.scraper ...
 | `--db` | 启用 SQLite 管道 |
 | `--db-path` | 数据库路径，默认 `output/jobs.db` |
 | `--step` | `list`、`detail`、`insight`、`all` 或 `status` |
+| `scripts.company_list.query --list-batches` | 只读列出现有批次和筛选条件 |
+| `scripts.company_list.query --query-hash HASH` | 只读查询指定批次 |
+| `--query-url URL` | 只读查询指定规范化 BOSS 查询 URL 对应批次 |
+| `--employee-min` / `--employee-max` | 参保人数闭区间边界 |
+| `--limit` / `--offset` | 查询结果分页，结果粒度为职位记录 |
+| `--format` | 抓取输出为 `json` 或 `csv`；查询输出为 `text` 或 `json` |
 | `--list-json` | 从现有列表 JSON 导入 |
 | `--detail-json-dir` | 从现有详情 JSON 目录导入 |
 | `--insight-delay` | 洞察抓取间隔基准秒数 |
@@ -145,7 +150,7 @@ uv run python -u -m scripts.company_insight.scraper CREDIT_CODE --port 9222 --de
 
 - 职位标题、薪资、城市、标签、`encrypt_brand_id`：BOSS 列表响应。
 - 公司名称、公司简介、工商信息、`credit_code`：BOSS 公司详情页。
-- 法定代表人、注册资本、登记状态、企业类型等洞察字段：爱企查详情页。
+- `employee_count` — 爱企查“参保人数”，可空整数，不等同于公司总员工数或 BOSS 企业规模。
 - `has_detail`、`has_insight`：`company_list` 上的管道状态字段。
 
 ## 风控退出

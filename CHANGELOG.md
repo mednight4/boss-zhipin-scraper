@@ -24,6 +24,7 @@
 - 删除死代码：`FETCH_API_JS_TEMPLATE`、`build_login_probe_url`、`parse_api_jobs_eval_value`、`should_use_dom_fallback`；`CDPSession` 新增事件缓冲与 `drain_events`；测试从 92 增至 96 个
 
 ### 新增
+- 已完成数据只读查询与参保人数 INTEGER 迁移（见 `specs/task_readonly_insight_query.md`）：`employee_count` 规范化为可空整数并兼容历史 JSON/SQLite，新增 `scripts.company_list.query` 只读批次筛选入口；Skill 增加按任务路由的查询工作流，不再让纯分析默认执行浏览器检查或抓取。
 - 新增 `--step status` 统一状态入口（#97）：`pipeline.print_status()` 重写为六区块盘点——查询批次、总体进度（职位/公司/详情/洞察计数）、待爬详情清单、待爬洞察清单（缺 `credit_code` 的单独列出并说明原因）、洞察 JSON 与 DB 对账（规范命名/孤儿/旧命名/无法解析/重复 `credit_code`，并列出具体文件名）、最近 5 家入库时间。此前这些信息只能靠 agent 自建 `check_*.py` 才能回答，是「接手者乱写脚本」的直接诱因。配套 `db.get_recent_insight_scrapes()`。`SKILL.md` 第 0 节新增「禁止行为」表，把「想做的事 → 正确入口」逐条映射。
 - 洞察 JSON 命名统一为 `aqc_{credit_code}.json`（#97）：新增 `scraper.insight_json_path()` / `save_insight_json()`，CLI 与 `pipeline.step5/step6` 共用同一命名，终结 `{credit_code}.json` / `{brand_id}.json` / `aqc_{credit_code}.json` 三种命名并存、无法判断哪家抓过的状态漂移。`pipeline.classify_insight_files()` 会回读文件名不含 `credit_code` 的历史文件内容，让重复抓取在盘点上不再隐形。
 - 新增行缓冲 helper `enable_line_buffering()`（#97）：被 agent 当子进程调用、stdout 走管道时 Python 默认按块缓冲，长任务十几分钟看不到任何输出、被误判成卡死。各 CLI 入口（`pipeline` / `company_insight.scraper`）统一调用，`SKILL.md` 同时强调长任务加 `-u`。

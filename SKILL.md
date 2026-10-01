@@ -1,7 +1,7 @@
 ---
 name: boss-zhipin-scraper
 description: "Scrape BOSS直聘 through a logged-in Chrome or Microsoft Edge CDP session, collect job listings and company data, and generate job-market summaries. Use when the user asks to search, collect, inspect, or analyze BOSS直聘 job data."
-version: 2.4.0
+version: 2.5.0
 author: eatmoreduck
 license: MIT
 platforms: [macos, linux, windows]
@@ -16,37 +16,14 @@ metadata:
 
 ## 0. Agent 启动协议
 
-本文件是 Skill 的最小启动入口。详细命令、检查工具、状态解释和恢复流程见 [`skill/agent_workflow.md`](skill/agent_workflow.md)。Agent 不需要在启动时读取全部技术参考。
+本文件是 Skill 的最小启动入口。先按任务类型选择对应的短工作流文档，不要在只读分析任务中加载抓取协议：
 
-收到任务后按以下顺序执行：
+- 已有数据库的筛选、统计或链接查询：读取 [`skill/query_workflow.md`](skill/query_workflow.md)。
+- 新抓取、继续/恢复抓取、进度检查：读取 [`skill/agent_workflow.md`](skill/agent_workflow.md)。
+- 参数字段说明：按需读取 [`skill/reference.md`](skill/reference.md)。
+- Pipeline 状态机和恢复契约：按需读取 [`skill/pipeline.md`](skill/pipeline.md)。
 
-```text
-1. 判断用户任务类型。
-2. 查询、抓取或恢复任务先执行环境检查。
-3. 解析用户 URL，或确认 keyword、city、filters、depth。
-4. 生成规范查询 URL 和 query_hash。
-5. 执行 --step status，读取 DB 和 JSON 状态。
-6. 只执行当前状态对应的现有模块命令。
-7. 命令结束后再次执行 --step status。
-8. 全部完成才读取结果；遇到登录、风控或数据契约异常就停止。
-```
-
-固定状态记录格式：
-
-```text
-[check]
-当前状态:
-事实依据:
-查询批次:
-已完成:
-待完成:
-决策点:
-下一命令:
-停止条件:
-```
-
-如果无法回答“当前状态、事实依据、下一命令”，先回到 `CHK-STATUS`，不要猜，不要新建检查脚本。
-
+只读分析不得因为数据较旧而隐式抓取或刷新。
 ## 1. 绝对规则
 
 ### 1.1 现有入口优先
@@ -56,6 +33,7 @@ metadata:
 | 检查环境、CDP、登录 | `uv run python -m scripts.boss_cdp_raw --check --cdp-port 9222` |
 | 检查真实搜索链路 | `uv run python -m scripts.boss_cdp_raw --smoke-test --cdp-port 9222` |
 | 查看批次、待办和 JSON 对账 | `uv run python -m scripts.company_list.pipeline --step status --db-path output/jobs.db` |
+| 查询已有数据库结果 | `uv run python -m scripts.company_list.query --db-path output/jobs.db --query-hash QUERY_HASH --employee-min 50 --employee-max 100` |
 | 批量抓 BOSS 公司详情 | `uv run python -u -m scripts.company_list.pipeline --step detail --port 9222 --db-path output/jobs.db`（先补导入当前待办品牌的详情 JSON，再抓剩余项）|
 | 批量抓爱企查洞察 | `uv run python -u -m scripts.company_list.pipeline --step insight --port 9222 --db-path output/jobs.db`（抓取后补导入残留 JSON）|
 | 执行列表、详情和洞察完整管道 | `uv run python -u -m scripts.company_list.pipeline --step all --keyword "AI Agent" --city 101020100 --db-path output/jobs.db` |
@@ -112,6 +90,10 @@ LEFT JOIN company_insight AS ci
 
 ## 3. 任务路由
 
+### 查询已完成数据
+
+用户只要求筛选已有数据库中的岗位/公司时，读取 [`skill/query_workflow.md`](skill/query_workflow.md)，直接使用只读查询 CLI。不要执行 `CHK-CDP`、不要生成新 `query_hash`、不要运行 `--step status`，除非用户也要求了解管道进度。
+
 ### 查询或抓取新任务
 
 先确认：
@@ -157,7 +139,7 @@ uv run python -m scripts.company_list.pipeline --step status --db-path output/jo
 
 ### 查询已有结果
 
-当两个 pending 都为 0 且数据仍在新鲜度窗口内，停止抓取，使用现有 DB 读取方法和只读联立查询回答用户。
+只读筛选使用 [`query_workflow.md`](query_workflow.md) 的批次列表和查询 CLI；查询可读取旧批次，不因新鲜度自动刷新。只有用户明确要求抓取或更新数据时才进入抓取流程。
 
 ## 4. 状态机摘要
 
@@ -199,7 +181,7 @@ cp boss-zhipin-scraper/scripts/job_summary.py <skill-dir>/scripts/
 ```
 
 
-参数和输出格式见 [`skill/reference.md`](skill/reference.md)。`scripts/job_summary.py` 负责读取已有结果生成聚合分析和求职提示词，不读取本地简历。
+参数和输出格式见 [`skill/reference.md`](skill/reference.md)。`scripts/job_summary.py` 负责读取职位 JSON 生成聚合分析和求职提示词；SQLite 已完成数据的条件筛选使用 `scripts.company_list.query` 和 [`skill/query_workflow.md`](skill/query_workflow.md)。
 
 Pipeline 技术状态和数据库参考见 [`skill/pipeline.md`](skill/pipeline.md)。
 
@@ -207,7 +189,7 @@ Pipeline 技术状态和数据库参考见 [`skill/pipeline.md`](skill/pipeline.
 
 ## 6. 版本与开发约束
 
-当前版本为 `2.4.0`。修改版本号时必须同步：
+当前版本为 `2.5.0`。修改版本号时必须同步：
 
 - `scripts/boss_cdp_raw.py`
 - `pyproject.toml`
